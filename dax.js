@@ -17,7 +17,7 @@ window.DAX = (function () {
   };
   const vendedores = ['Ana López', 'Luis Mora', 'Sara Ruiz', 'Pedro Díaz', 'Marta Gil'];
   const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-  const rows = [];
+  let rows = [];
   let id = 1;
   for (const anio of [2023, 2024]) {
     for (let mes = 1; mes <= 12; mes++) {
@@ -35,7 +35,7 @@ window.DAX = (function () {
       }
     }
   }
-  const columns = ['ID', 'Año', 'Mes', 'MesNombre', 'Fecha', 'Region', 'Categoria', 'Producto', 'Vendedor', 'Unidades', 'Precio', 'Ventas', 'Costo'];
+  let columns = ['ID', 'Año', 'Mes', 'MesNombre', 'Fecha', 'Region', 'Categoria', 'Producto', 'Vendedor', 'Unidades', 'Precio', 'Ventas', 'Costo'];
   const dimensionCols = ['Año', 'MesNombre', 'Region', 'Categoria', 'Producto', 'Vendedor'];
   const sortOrder = { MesNombre: meses };
 
@@ -509,5 +509,12 @@ window.DAX = (function () {
     return String(v);
   }
 
-  return { rows, columns, dimensionCols, parse, run, makeMeasures, distinctValues, slicerFilter, format, DaxError };
+  // Evalúa fn usando otra tabla "Ventas" (por ejemplo, la de un proyecto) y restaura la original al terminar.
+  function withData(data, fn) {
+    const prevRows = rows, prevCols = columns;
+    rows = data.rows; columns = data.columns;
+    try { return fn(); } finally { rows = prevRows; columns = prevCols; }
+  }
+
+  return { rows, columns, dimensionCols, parse, run, makeMeasures, distinctValues, slicerFilter, format, withData, DaxError };
 })();

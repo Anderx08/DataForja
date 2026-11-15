@@ -21,15 +21,25 @@
     { name: 'Num Ventas', expr: 'COUNTROWS(Ventas)' }
   ];
   const KEY = 'dataforja-v1';
-  let state = {
+  const freshState = theme => ({
     completed: [], xp: 0, streak: 0, bestStreak: 0, lastDay: null,
-    practice: {}, quiz: {}, daily: {}, badges: [], theme: 'system', last: null,
+    practice: {}, quiz: {}, daily: {}, badges: [], theme: theme || 'system', last: null,
     measures: DEFAULT_MEASURES.slice(), visual: { type: 'bar', axis: 'Region', measure: 'Ventas Totales' }, slicers: {},
-    drafts: {}
-  };
+    drafts: {}, srs: {}, reviewCorrect: 0, exams: {}, projects: {}
+  });
+  let state = freshState();
   function load() {
     try { const raw = localStorage.getItem(KEY); if (raw) state = Object.assign(state, JSON.parse(raw)); } catch (e) { /* sin almacenamiento */ }
     if (!Array.isArray(state.measures) || !state.measures.length) state.measures = DEFAULT_MEASURES.slice();
+    for (const k of ['srs', 'exams', 'projects', 'practice', 'quiz', 'drafts']) if (!state[k] || typeof state[k] !== 'object') state[k] = {};
+    // Las respuestas de retos anteriores a esta versión entran al repaso para hoy.
+    for (const [lid, picks] of Object.entries(state.quiz)) {
+      const l = LESSONS[lid]; if (!l || !l.quiz) continue;
+      for (const [qi, pick] of Object.entries(picks)) {
+        const id = `L:${lid}:${qi}`;
+        if (!state.srs[id] && l.quiz[qi]) state.srs[id] = { box: pick === l.quiz[qi].answer ? 1 : 0, due: today() };
+      }
+    }
   }
   function save() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* sin almacenamiento */ } }
   const today = () => new Date().toISOString().slice(0, 10);
@@ -52,6 +62,50 @@
     }
   }
   const trackProgress = t => { const done = t.lessons.filter(l => state.completed.includes(l.id)).length; return { done, total: t.lessons.length, pct: Math.round(100 * done / t.lessons.length) }; };
+
+  /* ============================================================ repaso espaciado (cajas de Leitner) */
+  const INTERVALS = [1, 3, 7, 14, 30, 60];
+  const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  const fmtDate = iso => new Date(iso + 'T12:00:00Z').toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' });
+  const SRS_ITEMS = {};
+  C.tracks.forEach(t => {
+    t.lessons.forEach(l => (l.quiz || []).forEach((q, qi) => { SRS_ITEMS[`L:${l.id}:${qi}`] = { ...q, track: t.id, lesson: l.id }; }));
+    if (t.exam) t.exam.questions.forEach((q, qi) => { SRS_ITEMS[`E:${t.id}:${qi}`] = { ...q, track: t.id, lesson: q.lesson }; });
+  });
+  C.daily.forEach((q, i) => { SRS_ITEMS[`D:${i}`] = { ...q, track: q.track, lesson: null }; });
+  // Primera respuesta: correcta va a la caja 1 (vuelve en 3 días); incorrecta a la caja 0 (mañana).
+  // En el repaso: correcta sube una caja; incorrecta vuelve a la caja 0.
+  function srsRecord(id, correct, fromReview) {
+    if (!SRS_ITEMS[id]) return;
+    const prev = state.srs[id];
+    let box;
+    if (!prev) box = correct ? 1 : 0;
+    else if (fromReview) box = correct ? Math.min(prev.box + 1, INTERVALS.length - 1) : 0;
+    else box = correct ? prev.box : 0;
+    state.srs[id] = { box, due: addDays(today(), INTERVALS[box]) };
+  }
+  const dueIds = () => Object.entries(state.srs).filter(([id, it]) => SRS_ITEMS[id] && it.due <= today()).map(([id]) => id);
+  function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+  /* ============================================================ criterio para completar una lección */
+  const quizOk = (l, qi) => !!(state.quiz[l.id] && state.quiz[l.id][qi] === l.quiz[qi].answer);
+  function requirements(l) {
+    const r = [];
+    if (l.practice) r.push({ label: l.practice.type === 'visual' ? 'Construir y comprobar el visual' : 'Superar la práctica', ok: !!state.practice[l.id] });
+    if (l.quiz) r.push({ label: l.quiz.length > 1 ? `Responder bien los ${l.quiz.length} retos rápidos` : 'Responder bien el reto rápido', ok: l.quiz.every((q, qi) => quizOk(l, qi)) });
+    return r;
+  }
+  function tryComplete(l) {
+    if (state.completed.includes(l.id)) return false;
+    const reqs = requirements(l);
+    if (!reqs.length || !reqs.every(x => x.ok)) return false;
+    state.completed.push(l.id); save();
+    addXP(100, 'Lección completada: ' + l.title);
+    const t = TRACKS[l.track]; const nx = t.lessons[l.index + 1];
+    if (nx) setTimeout(() => toast('Siguiente lección', nx.title), 600);
+    else if (t.exam) setTimeout(() => toast('Ruta terminada', 'Ya puedes presentar el examen final de ' + t.name), 600);
+    return true;
+  }
 
   /* ============================================================ UI básicos */
   let toastTimer;
@@ -198,11 +252,14 @@
     async sql() {
       if (RT.db) return RT.db;
       await loadScript('https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js');
-      const SQL = await window.initSqlJs({ locateFile: () => 'sql-wasm.wasm' });
+      const SQL = RT.SQL || await window.initSqlJs({ locateFile: () => 'sql-wasm.wasm' });
+      RT.SQL = SQL;
       RT.db = new SQL.Database(); RT.db.run(window.SQLDB.sql);
       return RT.db;
     },
-    resetDb() { if (RT.db) { RT.db.close(); RT.db = null; } return RT.sql(); }
+    resetDb() { if (RT.db) { RT.db.close(); RT.db = null; } return RT.sql(); },
+    // Base nueva e intacta, independiente de los cambios que el usuario haya hecho en el laboratorio.
+    async pristine() { await RT.sql(); const db = new RT.SQL.Database(); db.run(window.SQLDB.sql); return db; }
   };
   function runPython(code, stdin) {
     return new Promise(resolve => {
@@ -356,8 +413,13 @@
     if (h === 'logros') return { view: 'badges' };
     if (/^lab-(python|sql|powerbi)$/.test(h)) return { view: 'lab', id: h.slice(4) };
     if (/^chuleta-(python|sql|powerbi)$/.test(h)) return { view: 'cheat', id: h.slice(8) };
+    if (h === 'repaso') return { view: 'review' };
+    if (h === 'proyectos') return { view: 'projects' };
+    if (/^proyecto-/.test(h) && PROJECTS[h.slice(9)]) return { view: 'project', id: h.slice(9) };
+    if (/^examen-(python|sql|powerbi)$/.test(h)) return { view: 'exam', id: h.slice(7) };
     return { view: 'home' };
   }
+  const PROJECTS = Object.fromEntries((C.projects || []).map(p => [p.id, p]));
   function renderCheat(app, t) {
     app.innerHTML = `<section class="page-head" style="--tc: var(--${t.id})">
       <p class="crumbs"><a href="#inicio">Inicio</a> › <a href="#${t.id}">${esc(t.name)}</a> › Chuleta</p>
@@ -373,7 +435,8 @@
     const r = route();
     const app = $('#app');
     document.body.dataset.view = r.view;
-    $$('.nav a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === location.hash || (r.view === 'lesson' && a.getAttribute('href') === '#' + LESSONS[r.id].track) || (r.view === 'lab' && a.getAttribute('href') === '#lab-python') || (r.view === 'home' && a.getAttribute('href') === '#inicio')));
+    $$('.nav a').forEach(a => { const href = a.getAttribute('href'); a.classList.toggle('active', href === location.hash || (r.view === 'lesson' && href === '#' + LESSONS[r.id].track) || ((r.view === 'cheat') && href === '#' + r.id) || (r.view === 'lab' && href === '#lab-python') || ((r.view === 'exam' || r.view === 'project') && href === '#proyectos') || (r.view === 'home' && href === '#inicio')); });
+    clearInterval(demoTimer);
     if (r.view === 'home') renderHome(app);
     else if (r.view === 'track') renderTrack(app, TRACKS[r.id]);
     else if (r.view === 'lesson') renderLesson(app, LESSONS[r.id]);
@@ -381,12 +444,18 @@
     else if (r.view === 'badges') renderBadges(app);
     else if (r.view === 'lab') renderLab(app, r.id);
     else if (r.view === 'cheat') renderCheat(app, TRACKS[r.id]);
+    else if (r.view === 'review') renderReview(app);
+    else if (r.view === 'projects') renderProjects(app);
+    else if (r.view === 'project') renderProject(app, PROJECTS[r.id]);
+    else if (r.view === 'exam') renderExam(app, TRACKS[r.id]);
     window.scrollTo({ top: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
     $('#nav').classList.remove('open');
   }
   function renderTopbar() {
     $('#xp').textContent = state.xp.toLocaleString('es-MX');
     $('#streak').textContent = state.streak || 0;
+    const due = dueIds().length; const dc = $('#due-count');
+    if (dc) { dc.textContent = due; dc.hidden = !due; }
     const themeBtn = $('#theme');
     themeBtn.innerHTML = state.theme === 'dark' ? icon('moon') : state.theme === 'light' ? icon('sun') : icon('sun') + icon('moon');
     themeBtn.title = 'Tema: ' + (state.theme === 'system' ? 'automático' : state.theme === 'dark' ? 'oscuro' : 'claro');
@@ -407,8 +476,14 @@
     const total = ALL_LESSONS.length, done = state.completed.length;
     const nextLesson = state.last && LESSONS[state.last] && !state.completed.includes(state.last) ? LESSONS[state.last] : ALL_LESSONS.find(l => !state.completed.includes(l.id)) || ALL_LESSONS[0];
     const day = Math.floor(Date.now() / 86400000);
-    const dq = C.daily[day % C.daily.length];
+    const dIdx = day % C.daily.length;
+    const dq = C.daily[dIdx];
     const dailyDone = state.daily && state.daily.day === day;
+    const due = dueIds().length, deck = Object.keys(state.srs).filter(id => SRS_ITEMS[id]).length;
+    const mastered = Object.entries(state.srs).filter(([id, it]) => SRS_ITEMS[id] && it.box >= 3).length;
+    const nextDue = Object.values(state.srs).map(it => it.due).filter(d => d > today()).sort()[0];
+    const projDone = (C.projects || []).filter(p => state.projects[p.id] && state.projects[p.id].done).length;
+    const examsPassed = C.tracks.filter(t => state.exams[t.id] && state.exams[t.id].passed).length;
     app.innerHTML = `
     <section class="hero">
       <div class="hero-text">
@@ -417,7 +492,7 @@
         <p class="lead">Tres rutas, un mismo método: cada lección parte de un problema real de oficina, te explica lo justo y te pone a escribir código que se ejecuta aquí mismo, en tu navegador. Sin instalar nada.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#${nextLesson.id}">${icon('play')}${done ? 'Continuar: ' + esc(nextLesson.title) : 'Empezar la primera lección'}</a>
-          <a class="btn btn-ghost" href="#plan">Ver el plan de 8 semanas</a>
+          <a class="btn btn-ghost" href="#plan">Ver el plan de estudio</a>
         </div>
         <ul class="hero-points">
           <li>${icon('check')}Python real en el navegador</li>
@@ -458,16 +533,20 @@
         <div class="options">${dq.options.map((o, i) => `<button class="opt ${dailyDone ? (i === dq.answer ? 'right' : (state.daily.pick === i ? 'wrong' : '')) : ''}" data-i="${i}" ${dailyDone ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
         <p class="explain" ${dailyDone ? '' : 'hidden'}>${esc(dq.explain)}</p>
       </div>
-      <div class="card method">
-        <p class="eyebrow">${icon('book')} Cómo es cada lección</p>
-        <ol class="method-list">
-          <li><b>Por qué importa.</b> El problema real que resuelve, en dos líneas.</li>
-          <li><b>Concepto.</b> Solo lo necesario, con código que puedes copiar al editor.</li>
-          <li><b>Ejemplo de oficina.</b> Un caso completo con su resultado.</li>
-          <li><b>Práctica comprobada.</b> Escribes la solución y la plataforma la verifica.</li>
-          <li><b>Reto rápido.</b> Una pregunta para fijar la idea.</li>
-        </ol>
+      <div class="card review-home ${due ? 'has-due' : ''}">
+        <p class="eyebrow">${icon('flame')} Repaso espaciado</p>
+        ${deck ? `
+          <div class="review-home-n"><span class="stat-n">${due}</span><span>${due === 1 ? 'pregunta pendiente hoy' : 'preguntas pendientes hoy'}</span></div>
+          <p class="muted small">${mastered} de ${deck} preguntas dominadas. ${due ? 'Diez minutos de repaso hoy valen más que una hora dentro de un mes.' : (nextDue ? 'Próximo repaso: ' + esc(fmtDate(nextDue)) + '.' : '')}</p>
+          <a class="btn ${due ? 'btn-primary' : 'btn-ghost'}" href="#repaso">${icon('play')}${due ? 'Empezar el repaso' : 'Ver mi repaso'}</a>`
+        : `<h3>Lo que aprendes vuelve justo antes de olvidarse</h3>
+          <p class="muted small">Cada pregunta que respondas en las lecciones entra aquí y regresa a los 1, 3, 7, 14, 30 y 60 días. Empieza una lección para llenar tu repaso.</p>`}
       </div>
+    </section>
+
+    <section class="labs-strip prove-strip">
+      <div><p class="eyebrow">${icon('target')} Demuestra lo aprendido</p><h3>Proyectos integradores y exámenes finales</h3><p class="muted">Dos casos de negocio que recorren SQL, Python y Power BI con los mismos datos, y un examen por ruta con nota y recomendaciones de repaso. ${projDone}/${(C.projects || []).length} proyectos y ${examsPassed}/3 exámenes aprobados.</p></div>
+      <div class="labs-links"><a class="btn btn-primary" href="#proyectos">${icon('arrow')}Ver proyectos y exámenes</a></div>
     </section>
 
     <section class="labs-strip">
@@ -496,7 +575,7 @@
     embers($('#embers'));
 
     $$('#daily .opt').forEach(b => b.addEventListener('click', () => {
-      const i = +b.dataset.i; state.daily = { day, pick: i }; save();
+      const i = +b.dataset.i; state.daily = { day, pick: i }; srsRecord('D:' + dIdx, i === dq.answer, false); save(); renderTopbar();
       $$('#daily .opt').forEach((o, k) => { o.disabled = true; o.classList.toggle('right', k === dq.answer); o.classList.toggle('wrong', k === i && i !== dq.answer); });
       $('#daily .explain').hidden = false;
       if (i === dq.answer) addXP(15, 'Reto del día'); else { touchStreak(); save(); }
@@ -521,9 +600,20 @@
   /* ============================================================ ruta */
   function lessonRow(l, compact) {
     const done = state.completed.includes(l.id);
+    const reqs = requirements(l);
+    const partial = !done && reqs.some(r => r.ok) ? `<span class="lesson-reqs">${reqs.map(r => `<span class="${r.ok ? 'ok' : ''}">${r.ok ? icon('check') : '○'} ${esc(r.label.replace(/^(Superar|Responder bien|Construir y comprobar) /, '').replace(/^(la|el|los \d+) /, ''))}</span>`).join('')}</span>` : '';
     return `<a class="lesson-row ${done ? 'done' : ''} ${compact ? 'compact' : ''}" href="#${l.id}">
       <span class="lesson-num">${done ? icon('check') : l.index + 1}</span>
-      <span class="lesson-info"><span class="lesson-title">${esc(l.title)}</span>${compact ? '' : `<span class="lesson-meta">${l.reading ? 'Lectura guiada' : 'Práctica'} · ${l.minutes} min · ${esc(l.level)}</span>`}</span>
+      <span class="lesson-info"><span class="lesson-title">${esc(l.title)}</span>${compact ? '' : `<span class="lesson-meta">${l.reading ? 'Lectura guiada' : 'Práctica'} · ${l.minutes} min · ${esc(l.level)}${l.extra ? ` · ${l.extra.length} ejercicios extra` : ''}</span>${partial}`}</span>
+    </a>`;
+  }
+  function examCardHTML(t) {
+    const ex = state.exams[t.id]; const p = trackProgress(t);
+    const status = ex ? (ex.passed ? `<span class="chip chip-done">${icon('check')} Aprobado · mejor nota ${ex.best}%</span>` : `<span class="chip chip-warn">Mejor nota ${ex.best}% · se aprueba con ${t.exam.passMark}%</span>`) : `<span class="chip">Sin presentar</span>`;
+    return `<a class="exam-card" href="#examen-${t.id}" style="--tc: var(--${t.id})">
+      <span class="exam-ic">${icon('target')}</span>
+      <span class="exam-info"><b>Examen final de ${esc(t.name)}</b><span class="muted small">${t.exam.questions.length} preguntas y ${t.exam.tasks.length} tareas prácticas · ${p.done < p.total ? `recomendado al terminar las ${p.total} lecciones` : 'ya completaste la ruta'}</span></span>
+      ${status}
     </a>`;
   }
   function renderTrack(app, t) {
@@ -544,7 +634,156 @@
       </div>
       <div class="track-hero-ring">${ring(p.pct, 120, 10)}<div><b>${p.pct}%</b><span>${p.done} de ${p.total}</span></div></div>
     </section>
-    <section class="lesson-list">${t.lessons.map(l => lessonRow(l)).join('')}</section>`;
+    <section class="lesson-list">${t.lessons.map(l => lessonRow(l)).join('')}</section>
+    ${t.exam ? `<section class="track-exam">${examCardHTML(t)}</section>` : ''}`;
+  }
+
+  /* ============================================================ prácticas reutilizables
+     Las usan las lecciones, los exámenes y los proyectos. */
+  function diffHint(got, exp) {
+    const g = got.split('\n'), e = exp.split('\n');
+    if (g.length !== e.length) return `Se esperaban ${e.length} líneas y tu programa imprime ${g.length}.`;
+    for (let i = 0; i < e.length; i++) if (g[i] !== e[i]) return `La línea ${i + 1} no coincide. Esperado: "${e[i]}". Obtenido: "${g[i]}".`;
+    return 'La salida casi coincide; revisa espacios y mayúsculas.';
+  }
+  const solutionOutputs = new Map();
+  async function pythonExpected(p) {
+    if (p.expected != null) return p.expected;
+    if (!solutionOutputs.has(p.solution)) { const r = await runPython(p.solution, ''); solutionOutputs.set(p.solution, r.ok ? r.out : null); }
+    return solutionOutputs.get(p.solution);
+  }
+  function practiceHTML(p, sfx, o) {
+    const lang = o.lang;
+    const helpers = !o.exam && p.hints && p.hints.length;
+    return `<section class="practice ${o.passed ? 'passed' : ''} ${o.extra ? 'practice-extra' : ''}" id="practice-${sfx}">
+        <div class="practice-head"><p class="eyebrow">${esc(o.title)}</p>${o.passed ? `<span class="chip chip-done">${icon('check')} Superada</span>` : ''}</div>
+        <p class="prompt">${esc(p.prompt)}</p>
+        ${p.type === 'visual' ? `
+          <div class="cta-row"><a class="btn btn-ghost" href="#lab-powerbi">${icon('lab')}Abrir el laboratorio de Power BI</a><button class="btn btn-primary" id="check-visual-${sfx}">${icon('check')}Comprobar visual</button></div>
+          <div class="result" id="result-${sfx}" hidden></div>` : `
+          ${lang === 'dax' ? `<div class="dax-row"><span class="dax-name">Medida =</span></div>` : ''}
+          <div id="editor-${sfx}"></div>
+          ${lang === 'python' && !o.exam ? `<details class="stdin"><summary>Entrada para input() (una línea por llamada)</summary><textarea id="stdin-${sfx}" rows="2" placeholder="Si tu programa usa input(), escribe aquí las respuestas"></textarea></details>` : ''}
+          <div class="toolbar">
+            <button class="btn btn-primary" id="check-${sfx}">${icon('check')}Comprobar</button>
+            <button class="btn btn-ghost" id="run-${sfx}">${icon('play')}Ejecutar</button>
+            ${helpers ? `<button class="btn btn-ghost" id="hint-${sfx}">Pista</button><button class="btn btn-ghost" id="solution-${sfx}">Ver solución</button>` : ''}
+            <button class="btn btn-text" id="reset-${sfx}">Reiniciar</button>
+            <span class="kbd muted">Ctrl + Enter ejecuta</span>
+          </div>
+          <div class="hints" id="hints-${sfx}"></div>
+          <div class="result" id="result-${sfx}" hidden></div>
+          <div class="output" id="out-${sfx}" hidden></div>
+          <div class="solution" id="solution-box-${sfx}" hidden></div>`}
+      </section>`;
+  }
+  function markPassedUI(sfx) {
+    const sec = $('#practice-' + sfx); if (!sec) return;
+    sec.classList.add('passed');
+    const h = $('.practice-head', sec); if (h && !$('.chip-done', h)) h.insertAdjacentHTML('beforeend', `<span class="chip chip-done">${icon('check')} Superada</span>`);
+  }
+  // o: { lang, draftKey, label, exam, dax: { data, measures } | null, onPass() }
+  function mountPractice(p, sfx, o) {
+    const S = id => $('#' + id + '-' + sfx);
+    const lang = o.lang;
+    const pass = () => { markPassedUI(sfx); if (o.onPass) o.onPass(); };
+    if (p.type === 'visual') {
+      S('check-visual').addEventListener('click', () => {
+        const c = p.check; const v = state.visual || {}; const problems = [];
+        if (v.type !== c.visual) problems.push('el tipo de visual debe ser Barras');
+        if (v.axis !== c.axis) problems.push('el eje debe ser ' + c.axis);
+        if (v.measure !== c.measure) problems.push('la medida debe ser ' + c.measure);
+        for (const [k, val] of Object.entries(c.slicer)) if (String(state.slicers[k] || '') !== val) problems.push(`el segmentador ${k} debe estar en ${val}`);
+        const r = S('result'); r.hidden = false;
+        if (!problems.length) { r.className = 'result ok'; r.innerHTML = `<b>${icon('check')} Visual correcto.</b> Barras de Ventas Totales por Región, filtradas a 2024.`; pass(); }
+        else { r.className = 'result bad'; r.innerHTML = `<b>Todavía no.</b> Revisa en el laboratorio: ${esc(problems.join('; '))}.`; }
+      });
+      return null;
+    }
+    const draftKey = o.draftKey;
+    const e = makeEditor(S('editor'), {
+      lang, id: 'ed-' + String(sfx).replace(/\W/g, '-'), label: o.label || 'Editor de práctica',
+      value: draftKey && state.drafts[draftKey] != null ? state.drafts[draftKey] : p.starter,
+      onRun: () => runPractice(false),
+      onChange: v => { if (!draftKey) return; state.drafts[draftKey] = v; clearTimeout(e._t); e._t = setTimeout(save, 400); }
+    });
+    S('run').addEventListener('click', () => runPractice(false));
+    S('check').addEventListener('click', () => runPractice(true));
+    S('reset').addEventListener('click', () => { e.set(p.starter); if (draftKey) { delete state.drafts[draftKey]; save(); } S('result').hidden = true; S('out').hidden = true; });
+    if (S('hint')) {
+      let hintN = 0;
+      S('hint').addEventListener('click', () => { if (hintN < p.hints.length) { const h = document.createElement('p'); h.className = 'hint'; h.innerHTML = `<b>Pista ${hintN + 1}.</b> ${esc(p.hints[hintN])}`; S('hints').appendChild(h); hintN++; } if (hintN >= p.hints.length) { S('hint').disabled = true; S('hint').textContent = 'Sin más pistas'; } });
+      S('solution').addEventListener('click', () => {
+        const box = S('solution-box');
+        if (box.hidden && !box.dataset.confirm) {
+          box.hidden = false; box.dataset.confirm = '1';
+          box.innerHTML = `<p>Ver la solución ahora reduce lo que aprendes. ¿Seguro? <button class="btn btn-small sol-yes">Sí, mostrar</button> <button class="btn btn-small btn-text sol-no">Intentar un poco más</button></p>`;
+          $('.sol-yes', box).addEventListener('click', () => { box.innerHTML = `<p class="eyebrow">Solución de referencia</p>${codeBlock(p.solution, lang)}<button class="btn btn-small sol-load">Cargar en el editor</button>`; $('.sol-load', box).addEventListener('click', () => e.set(p.solution)); bindCodeActions(box, () => {}); });
+          $('.sol-no', box).addEventListener('click', () => { box.hidden = true; delete box.dataset.confirm; });
+        } else box.hidden = !box.hidden;
+      });
+    }
+    const daxRun = expr => o.dax
+      ? window.DAX.withData(o.dax.data, () => window.DAX.run(expr, { measures: o.dax.measures }))
+      : window.DAX.run(expr, { measures: measuresMap() });
+    async function runPractice(check) {
+      const code = e.get(); const out = S('out'), res = S('result');
+      out.hidden = false; res.hidden = true;
+      out.innerHTML = `<div class="output-bar">Ejecutando…</div>`;
+      try {
+        if (lang === 'python') {
+          await RT.python();
+          const r = await runPython(code, (S('stdin') || {}).value || '');
+          out.innerHTML = `<div class="output-bar">Salida</div><pre>${esc(r.out) || '<span class="muted">(sin salida)</span>'}</pre>${r.ok ? '' : `<pre class="err">${esc(r.err)}</pre>`}`;
+          if (check) {
+            const expected = await pythonExpected(p);
+            if (!r.ok) showResult(false, 'El programa terminó con un error. Corrígelo y vuelve a comprobar.');
+            else if (expected == null) showResult(false, 'No se pudo calcular la salida esperada. Recarga la página e inténtalo de nuevo.');
+            else if (norm(r.out) === norm(expected)) showResult(true, 'Tu salida coincide exactamente con la esperada.');
+            else showResult(false, diffHint(norm(r.out), norm(expected)));
+          }
+        } else if (lang === 'sql' && p.type === 'sql-modify') {
+          await RT.sql();
+          const r = runSQL(code);
+          if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'Alguna instrucción tiene un error. Corrígela y vuelve a comprobar.'); return; }
+          const after = sqlRows(runSQL(p.verify).results);
+          out.innerHTML = `<div class="output-bar">Estado de la tabla tras tus cambios</div>${tableHTML(after.columns, after.values)}`;
+          if (check) {
+            await RT.resetDb(); runSQL(p.solution); const expected = sqlRows(runSQL(p.verify).results);
+            await RT.resetDb(); runSQL(code); const mine = sqlRows(runSQL(p.verify).results);
+            const c = sqlCompare(mine, expected, true);
+            showResult(c.ok, c.ok ? 'La tabla quedó exactamente como se esperaba.' : 'La tabla no quedó como se esperaba. ' + c.why);
+          }
+        } else if (lang === 'sql') {
+          await RT.sql();
+          const r = runSQL(code);
+          if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'La consulta tiene un error. Corrígela y vuelve a comprobar.'); return; }
+          const rs = sqlRows(r.results);
+          out.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas · ${r.ms.toFixed(1)} ms</div>${tableHTML(rs.columns, rs.values)}`;
+          if (check) {
+            const sol = sqlRows(runSQL(p.solution).results);
+            const c = sqlCompare(rs, sol, p.ordered);
+            showResult(c.ok, c.ok ? 'El resultado coincide con la consulta de referencia.' : c.why);
+          }
+        } else if (lang === 'dax') {
+          try {
+            const v = daxRun(code);
+            out.innerHTML = `<div class="output-bar">Resultado (sin filtros)</div><div class="kpi small"><div class="kpi-value">${esc(window.DAX.format(v))}</div></div>`;
+            if (check) {
+              const expected = daxRun(p.solution);
+              const ok = typeof v === 'number' && typeof expected === 'number' ? Math.abs(v - expected) < 0.005 : String(v) === String(expected);
+              showResult(ok, ok ? 'La medida devuelve el valor esperado.' : `El valor esperado es ${window.DAX.format(expected)} y tu expresión devuelve ${window.DAX.format(v)}.`);
+            }
+          } catch (err) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(err.message)}</pre>`; if (check) showResult(false, 'La expresión tiene un error. Corrígela y vuelve a comprobar.'); }
+        }
+      } catch (err) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(err.message || err)}</pre>`; }
+    }
+    function showResult(ok, msg) {
+      const res = S('result'); res.hidden = false; res.className = 'result ' + (ok ? 'ok' : 'bad');
+      res.innerHTML = `<b>${ok ? icon('check') + ' Correcto.' : 'Todavía no.'}</b> ${esc(msg)}`;
+      if (ok) pass();
+    }
+    return e;
   }
 
   /* ============================================================ lección */
@@ -558,32 +797,36 @@
     const runnableLang = t.runtime;
     const pKey = i => i === 0 ? l.id : l.id + ':' + i;
     const quizState = state.quiz[l.id] || {};
-    function practiceHTML(p, i) {
-      const passed = !!state.practice[pKey(i)];
-      const title = i === 0 ? 'Práctica' : `Ejercicio extra ${i}`;
-      return `<section class="practice ${passed ? 'passed' : ''} ${i > 0 ? 'practice-extra' : ''}" id="practice-${i}">
-          <div class="practice-head"><p class="eyebrow">${title}</p>${passed ? `<span class="chip chip-done">${icon('check')} Superada</span>` : ''}</div>
-          <p class="prompt">${esc(p.prompt)}</p>
-          ${p.type === 'visual' ? `
-            <div class="cta-row"><a class="btn btn-ghost" href="#lab-powerbi">${icon('lab')}Abrir el laboratorio de Power BI</a><button class="btn btn-primary" id="check-visual-${i}">${icon('check')}Comprobar visual</button></div>
-            <div class="result" id="result-${i}" hidden></div>` : `
-            ${runnableLang === 'dax' ? `<div class="dax-row"><span class="dax-name">Medida =</span></div>` : ''}
-            <div id="editor-${i}"></div>
-            ${runnableLang === 'python' ? `<details class="stdin"><summary>Entrada para input() (una línea por llamada)</summary><textarea id="stdin-${i}" rows="2" placeholder="Si tu programa usa input(), escribe aquí las respuestas"></textarea></details>` : ''}
-            <div class="toolbar">
-              <button class="btn btn-primary" id="check-${i}">${icon('check')}Comprobar</button>
-              <button class="btn btn-ghost" id="run-${i}">${icon('play')}Ejecutar</button>
-              <button class="btn btn-ghost" id="hint-${i}">Pista</button>
-              <button class="btn btn-ghost" id="solution-${i}">Ver solución</button>
-              <button class="btn btn-text" id="reset-${i}">Reiniciar</button>
-              <span class="kbd muted">Ctrl + Enter ejecuta</span>
-            </div>
-            <div class="hints" id="hints-${i}"></div>
-            <div class="result" id="result-${i}" hidden></div>
-            <div class="output" id="out-${i}" hidden></div>
-            <div class="solution" id="solution-box-${i}" hidden></div>`}
-        </section>`;
+    const footHTML = () => {
+      const isDone = state.completed.includes(l.id);
+      const reqs = requirements(l);
+      return `${isDone
+        ? `<div class="reqs reqs-done"><span class="chip chip-done">${icon('check')} Lección completada</span><p class="muted small">Sus preguntas volverán en tu repaso espaciado para que no se olviden.</p></div>`
+        : `<div class="reqs"><p class="eyebrow">Para completar esta lección</p><ul>${reqs.map(r => `<li class="${r.ok ? 'ok' : ''}"><span class="req-ic">${r.ok ? icon('check') : ''}</span>${esc(r.label)}</li>`).join('')}</ul><p class="muted small">La lección se marca sola al cumplir todo. Los ejercicios extra son opcionales y dan puntos adicionales.</p></div>`}
+        <div class="pager">
+          ${prev ? `<a class="btn btn-ghost" href="#${prev.id}">‹ ${esc(prev.title)}</a>` : ''}
+          ${next ? `<a class="btn btn-ghost" href="#${next.id}">${esc(next.title)} ›</a>` : (t.exam ? `<a class="btn btn-primary" href="#examen-${t.id}">${icon('target')}Examen final de ${esc(t.name)} ›</a>` : `<a class="btn btn-ghost" href="#${t.id}">Volver a la ruta ›</a>`)}
+        </div>`;
+    };
+    function refreshCompletion() {
+      const justDone = tryComplete(l);
+      $('#lesson-foot').innerHTML = footHTML();
+      if (justDone) {
+        const chips = $('.lesson .chips'); if (chips && !$('.chip-done', chips)) chips.insertAdjacentHTML('beforeend', `<span class="chip chip-done">${icon('check')} Completada</span>`);
+        const item = $(`.side-item[href="#${l.id}"]`); if (item) { item.classList.add('done'); $('span', item).innerHTML = icon('check'); }
+      }
     }
+    const quizItemHTML = (q, qi) => {
+      const picked = quizState[qi];
+      const answered = picked !== undefined;
+      const right = answered && picked === q.answer;
+      return `<div class="quiz-q" data-q="${qi}">
+        <h3>${esc(q.q).replace(/\n/g, '<br>')}</h3>
+        <div class="options">${q.options.map((o, i) => `<button class="opt ${answered ? (i === q.answer && right ? 'right' : (picked === i && !right ? 'wrong' : '')) : ''}" data-i="${i}" ${answered ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
+        <p class="explain" ${answered ? '' : 'hidden'}>${esc(q.explain)}</p>
+        <div class="quiz-retry" ${answered && !right ? '' : 'hidden'}><button class="btn btn-small btn-ghost retry">Intentar de nuevo</button><span class="muted small">Esta pregunta volverá mañana en tu repaso.</span></div>
+      </div>`;
+    };
     app.innerHTML = `
     <div class="lesson-layout" style="--tc: var(--${t.id})">
       <aside class="lesson-side">
@@ -613,139 +856,29 @@
           ${l.example.output ? `<div class="output static"><div class="output-bar">Salida</div><pre>${esc(l.example.output)}</pre></div>` : ''}
         </section>` : ''}
 
-        ${practices.map((p, i) => practiceHTML(p, i)).join('')}
+        ${practices.map((p, i) => practiceHTML(p, i, { lang: runnableLang, title: i === 0 ? 'Práctica' : `Ejercicio extra ${i}`, passed: !!state.practice[pKey(i)], extra: i > 0 })).join('')}
 
         ${l.quiz ? `<section class="quiz" id="quiz">
           <p class="eyebrow">Reto rápido</p>
-          ${l.quiz.map((q, qi) => { const picked = quizState[qi]; return `<div class="quiz-q" data-q="${qi}">
-            <h3>${esc(q.q).replace(/\n/g, '<br>')}</h3>
-            <div class="options">${q.options.map((o, i) => `<button class="opt ${picked !== undefined ? (i === q.answer ? 'right' : (picked === i ? 'wrong' : '')) : ''}" data-i="${i}" ${picked !== undefined ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
-            <p class="explain" ${picked !== undefined ? '' : 'hidden'}>${esc(q.explain)}</p>
-          </div>`; }).join('')}
+          ${l.quiz.map(quizItemHTML).join('')}
         </section>` : ''}
 
-        <footer class="lesson-foot">
-          <button class="btn ${done ? 'btn-ghost' : 'btn-primary'}" id="complete">${icon('check')}${done ? 'Completada · marcar como pendiente' : 'Marcar lección como completada'}</button>
-          <div class="pager">
-            ${prev ? `<a class="btn btn-ghost" href="#${prev.id}">‹ ${esc(prev.title)}</a>` : ''}
-            ${next ? `<a class="btn btn-ghost" href="#${next.id}">${esc(next.title)} ›</a>` : `<a class="btn btn-ghost" href="#${t.id}">Volver a la ruta ›</a>`}
-          </div>
-        </footer>
+        <footer class="lesson-foot" id="lesson-foot">${footHTML()}</footer>
       </article>
     </div>`;
 
     // editores + acciones de cada práctica
-    const eds = [];
-    practices.forEach((p, i) => bindPractice(p, i));
+    const eds = practices.map((p, i) => mountPractice(p, i, {
+      lang: runnableLang, draftKey: pKey(i), label: i === 0 ? 'Editor de práctica' : 'Editor del ejercicio extra ' + i,
+      onPass: () => {
+        const key = pKey(i);
+        if (state.practice[key]) return;
+        state.practice[key] = true; save();
+        addXP(i === 0 ? 50 : 30, i === 0 ? 'Práctica superada' : 'Ejercicio extra superado');
+        if (i === 0) refreshCompletion();
+      }
+    }));
     const ed = eds[0] || null;
-    function bindPractice(p, i) {
-      const S = id => $('#' + id + '-' + i);
-      const key = pKey(i);
-      if (p.type === 'visual') {
-        S('check-visual').addEventListener('click', () => {
-          const c = p.check; const v = state.visual || {}; const problems = [];
-          if (v.type !== c.visual) problems.push('el tipo de visual debe ser Barras');
-          if (v.axis !== c.axis) problems.push('el eje debe ser ' + c.axis);
-          if (v.measure !== c.measure) problems.push('la medida debe ser ' + c.measure);
-          for (const [k, val] of Object.entries(c.slicer)) if (String(state.slicers[k] || '') !== val) problems.push(`el segmentador ${k} debe estar en ${val}`);
-          const r = S('result'); r.hidden = false;
-          if (!problems.length) { r.className = 'result ok'; r.innerHTML = `<b>${icon('check')} Visual correcto.</b> Barras de Ventas Totales por Región, filtradas a 2024.`; passPractice(i); }
-          else { r.className = 'result bad'; r.innerHTML = `<b>Todavía no.</b> Revisa en el laboratorio: ${esc(problems.join('; '))}.`; }
-        });
-        return;
-      }
-      const draftKey = key;
-      const e = makeEditor(S('editor'), {
-        lang: runnableLang, id: 'ed-' + key.replace(':', '-'), label: i === 0 ? 'Editor de práctica' : 'Editor del ejercicio extra ' + i,
-        value: state.drafts[draftKey] != null ? state.drafts[draftKey] : p.starter,
-        onRun: () => runPractice(false),
-        onChange: v => { state.drafts[draftKey] = v; clearTimeout(e._t); e._t = setTimeout(save, 400); }
-      });
-      eds[i] = e;
-      S('run').addEventListener('click', () => runPractice(false));
-      S('check').addEventListener('click', () => runPractice(true));
-      S('reset').addEventListener('click', () => { e.set(p.starter); delete state.drafts[draftKey]; save(); S('result').hidden = true; S('out').hidden = true; });
-      let hintN = 0;
-      S('hint').addEventListener('click', () => { if (hintN < p.hints.length) { const h = document.createElement('p'); h.className = 'hint'; h.innerHTML = `<b>Pista ${hintN + 1}.</b> ${esc(p.hints[hintN])}`; S('hints').appendChild(h); hintN++; } if (hintN >= p.hints.length) { S('hint').disabled = true; S('hint').textContent = 'Sin más pistas'; } });
-      S('solution').addEventListener('click', () => {
-        const box = S('solution-box');
-        if (box.hidden && !box.dataset.confirm) {
-          box.hidden = false; box.dataset.confirm = '1';
-          box.innerHTML = `<p>Ver la solución ahora reduce lo que aprendes. ¿Seguro? <button class="btn btn-small sol-yes">Sí, mostrar</button> <button class="btn btn-small btn-text sol-no">Intentar un poco más</button></p>`;
-          $('.sol-yes', box).addEventListener('click', () => { box.innerHTML = `<p class="eyebrow">Solución de referencia</p>${codeBlock(p.solution, runnableLang)}<button class="btn btn-small sol-load">Cargar en el editor</button>`; $('.sol-load', box).addEventListener('click', () => e.set(p.solution)); bindCodeActions(box, () => {}); });
-          $('.sol-no', box).addEventListener('click', () => { box.hidden = true; delete box.dataset.confirm; });
-        } else box.hidden = !box.hidden;
-      });
-      async function runPractice(check) {
-        const code = e.get(); const out = S('out'), res = S('result');
-        out.hidden = false; res.hidden = true;
-        out.innerHTML = `<div class="output-bar">Ejecutando…</div>`;
-        try {
-          if (runnableLang === 'python') {
-            await RT.python();
-            const r = await runPython(code, (S('stdin') || {}).value || '');
-            out.innerHTML = `<div class="output-bar">Salida</div><pre>${esc(r.out) || '<span class="muted">(sin salida)</span>'}</pre>${r.ok ? '' : `<pre class="err">${esc(r.err)}</pre>`}`;
-            if (check) {
-              if (!r.ok) showResult(false, 'El programa terminó con un error. Corrígelo y vuelve a comprobar.');
-              else if (norm(r.out) === norm(p.expected)) showResult(true, 'Tu salida coincide exactamente con la esperada.');
-              else showResult(false, diffHint(norm(r.out), norm(p.expected)));
-            }
-          } else if (runnableLang === 'sql' && p.type === 'sql-modify') {
-            await RT.sql();
-            const r = runSQL(code);
-            if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'Alguna instrucción tiene un error. Corrígela y vuelve a comprobar.'); return; }
-            const after = sqlRows(runSQL(p.verify).results);
-            out.innerHTML = `<div class="output-bar">Estado de la tabla tras tus cambios</div>${tableHTML(after.columns, after.values)}`;
-            if (check) {
-              await RT.resetDb(); runSQL(p.solution); const expected = sqlRows(runSQL(p.verify).results);
-              await RT.resetDb(); runSQL(code); const mine = sqlRows(runSQL(p.verify).results);
-              const c = sqlCompare(mine, expected, true);
-              showResult(c.ok, c.ok ? 'La tabla quedó exactamente como se esperaba.' : 'La tabla no quedó como se esperaba. ' + c.why);
-            }
-          } else if (runnableLang === 'sql') {
-            await RT.sql();
-            const r = runSQL(code);
-            if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'La consulta tiene un error. Corrígelo y vuelve a comprobar.'); return; }
-            const rs = sqlRows(r.results);
-            out.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas · ${r.ms.toFixed(1)} ms</div>${tableHTML(rs.columns, rs.values)}`;
-            if (check) {
-              const sol = sqlRows(runSQL(p.solution).results);
-              const c = sqlCompare(rs, sol, p.ordered);
-              showResult(c.ok, c.ok ? 'El resultado coincide con la consulta de referencia.' : c.why);
-            }
-          } else if (runnableLang === 'dax') {
-            const measures = measuresMap();
-            try {
-              const v = window.DAX.run(code, { measures });
-              out.innerHTML = `<div class="output-bar">Resultado (sin filtros)</div><div class="kpi small"><div class="kpi-value">${esc(window.DAX.format(v))}</div></div>`;
-              if (check) {
-                const expected = window.DAX.run(p.solution, { measures });
-                const ok = typeof v === 'number' && typeof expected === 'number' ? Math.abs(v - expected) < 0.005 : String(v) === String(expected);
-                showResult(ok, ok ? 'La medida devuelve el valor esperado.' : `El valor esperado es ${window.DAX.format(expected)} y tu expresión devuelve ${window.DAX.format(v)}.`);
-              }
-            } catch (err) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(err.message)}</pre>`; if (check) showResult(false, 'La expresión tiene un error. Corrígela y vuelve a comprobar.'); }
-          }
-        } catch (err) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(err.message || err)}</pre>`; }
-      }
-      function showResult(ok, msg) {
-        const res = S('result'); res.hidden = false; res.className = 'result ' + (ok ? 'ok' : 'bad');
-        res.innerHTML = `<b>${ok ? icon('check') + ' Correcto.' : 'Todavía no.'}</b> ${esc(msg)}`;
-        if (ok) passPractice(i);
-      }
-    }
-    function passPractice(i) {
-      const key = pKey(i);
-      if (!state.practice[key]) {
-        state.practice[key] = true; save(); addXP(i === 0 ? 50 : 30, i === 0 ? 'Práctica superada' : 'Ejercicio extra superado');
-        const sec = $('#practice-' + i); sec.classList.add('passed'); const h = $('.practice-head', sec); if (h && !$('.chip-done', h)) h.insertAdjacentHTML('beforeend', `<span class="chip chip-done">${icon('check')} Superada</span>`);
-      }
-    }
-    function diffHint(got, exp) {
-      const g = got.split('\n'), e = exp.split('\n');
-      if (g.length !== e.length) return `Se esperaban ${e.length} líneas y tu programa imprime ${g.length}.`;
-      for (let i = 0; i < e.length; i++) if (g[i] !== e[i]) return `La línea ${i + 1} no coincide. Esperado: "${e[i]}". Obtenido: "${g[i]}".`;
-      return 'La salida casi coincide; revisa espacios y mayúsculas.';
-    }
     // ejemplo ejecutable
     const runEx = $('#run-example');
     if (runEx) runEx.addEventListener('click', async () => {
@@ -760,24 +893,29 @@
         }
       } catch (e) { box.innerHTML = `<pre class="err">${esc(e.message || e)}</pre>`; }
     });
-    // quiz
+    // reto rápido: un error no bloquea la lección; se reintenta y la pregunta entra al repaso de mañana
     $$('#quiz .quiz-q').forEach(qEl => {
       const qi = +qEl.dataset.q, q = l.quiz[qi];
+      const srsId = `L:${l.id}:${qi}`;
       $$('.opt', qEl).forEach(b => b.addEventListener('click', () => {
-        const i = +b.dataset.i; state.quiz[l.id] = state.quiz[l.id] || {}; state.quiz[l.id][qi] = i; save();
-        $$('.opt', qEl).forEach((o, k) => { o.disabled = true; o.classList.toggle('right', k === q.answer); o.classList.toggle('wrong', k === i && i !== q.answer); });
+        const i = +b.dataset.i; const right = i === q.answer;
+        state.quiz[l.id] = state.quiz[l.id] || {};
+        const firstTry = !state.srs[srsId];
+        state.quiz[l.id][qi] = i;
+        srsRecord(srsId, right, false); save();
+        $$('.opt', qEl).forEach((o, k) => { o.disabled = true; o.classList.toggle('right', right && k === q.answer); o.classList.toggle('wrong', k === i && !right); });
         $('.explain', qEl).hidden = false;
-        if (i === q.answer) addXP(20, 'Reto rápido'); else { touchStreak(); save(); }
+        $('.quiz-retry', qEl).hidden = right;
+        if (right && firstTry) addXP(20, 'Reto rápido'); else { touchStreak(); save(); renderTopbar(); }
+        if (right) refreshCompletion();
       }));
+      $('.retry', qEl).addEventListener('click', () => {
+        $$('.opt', qEl).forEach(o => { o.disabled = false; o.classList.remove('right', 'wrong'); });
+        $('.explain', qEl).hidden = true; $('.quiz-retry', qEl).hidden = true;
+      });
     });
-    // completar
-    $('#complete').addEventListener('click', () => {
-      if (state.completed.includes(l.id)) { state.completed = state.completed.filter(x => x !== l.id); save(); renderLesson(app, l); return; }
-      state.completed.push(l.id); save(); addXP(100, 'Lección completada: ' + l.title); checkBadges();
-      renderLesson(app, l); renderTopbar();
-      const nx = t.lessons[l.index + 1];
-      if (nx) toast('Siguiente lección', nx.title);
-    });
+    // lecciones que ya cumplían los requisitos con progreso anterior
+    if (!done && requirements(l).every(r => r.ok)) refreshCompletion();
     // bloques de código: copiar / enviar
     bindCodeActions(app, code => { if (ed) { ed.set(code); $('#practice-0').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }); ed.focus(); } });
   }
@@ -808,15 +946,355 @@
 
   /* ============================================================ plan / logros */
   function renderPlan(app) {
-    app.innerHTML = `<section class="page-head"><p class="eyebrow">Plan sugerido</p><h1>Ocho semanas, tres rutas entrelazadas</h1><p class="lead">Alternar Python, SQL y Power BI cada semana refuerza las ideas comunes: filtrar, agrupar, unir, medir. Tres o cuatro lecciones por semana equivalen a unos 60 minutos.</p></section>
-    <section class="weeks">${C.plan.map(w => { const done = w.lessons.filter(id => state.completed.includes(id)).length; return `<div class="week ${done === w.lessons.length ? 'done' : ''}"><div class="week-head"><span class="week-n">Semana ${w.week}</span><h3>${esc(w.title)}</h3><span class="muted">${done}/${w.lessons.length}</span></div>${w.lessons.map(id => { const l = LESSONS[id]; return `<a class="week-item ${state.completed.includes(id) ? 'done' : ''}" href="#${id}" style="--tc: var(--${l.track})"><span class="dot-t">${icon(l.track)}</span><span>${esc(l.title)}</span><small>${l.minutes} min</small></a>`; }).join('')}</div>`; }).join('')}</section>`;
+    // Un elemento del plan puede ser una lección, un proyecto (proyecto-x) o un examen (examen-x).
+    const item = id => {
+      if (LESSONS[id]) { const l = LESSONS[id]; return { done: state.completed.includes(id), tc: l.track, ic: icon(l.track), title: l.title, meta: l.minutes + ' min' }; }
+      if (id.startsWith('proyecto-')) { const p = PROJECTS[id.slice(9)]; return { done: !!(state.projects[p.id] && state.projects[p.id].done), tc: 'accent', ic: icon('lab'), title: 'Proyecto: ' + p.title, meta: p.minutes + ' min' }; }
+      const t = TRACKS[id.slice(7)]; return { done: !!(state.exams[t.id] && state.exams[t.id].passed), tc: t.id, ic: icon('target'), title: 'Examen final de ' + t.name, meta: '45 min' };
+    };
+    app.innerHTML = `<section class="page-head"><p class="eyebrow">Plan sugerido</p><h1>Diez semanas, tres rutas entrelazadas</h1><p class="lead">Alternar Python, SQL y Power BI cada semana refuerza las ideas comunes: filtrar, agrupar, unir, medir. Tres o cuatro lecciones por semana, más diez minutos diarios de repaso, equivalen a unas dos horas semanales. La última semana aplica todo en proyectos y exámenes.</p>
+      <ol class="method-list method-inline"><li><b>Por qué importa:</b> el problema real.</li><li><b>Concepto</b> con código ejecutable.</li><li><b>Ejemplo de oficina.</b></li><li><b>Práctica comprobada</b> y ejercicios extra.</li><li><b>Reto rápido</b> que entra al repaso.</li></ol></section>
+    <section class="weeks">${C.plan.map(w => { const items = w.lessons.map(id => [id, item(id)]); const done = items.filter(([, x]) => x.done).length; return `<div class="week ${done === items.length ? 'done' : ''}"><div class="week-head"><span class="week-n">Semana ${w.week}</span><h3>${esc(w.title)}</h3><span class="muted">${done}/${items.length}</span></div>${items.map(([id, x]) => `<a class="week-item ${x.done ? 'done' : ''}" href="#${id}" style="--tc: var(--${x.tc})"><span class="dot-t">${x.ic}</span><span>${esc(x.title)}</span><small>${esc(x.meta)}</small></a>`).join('')}</div>`; }).join('')}</section>`;
   }
   function renderBadges(app) {
     app.innerHTML = `<section class="page-head"><p class="eyebrow">Logros</p><h1>Insignias</h1><p class="lead">Se desbloquean solas al avanzar. ${state.badges.length} de ${C.badges.length} conseguidas.</p></section>
     <section class="badges">${C.badges.map(b => { const got = state.badges.includes(b.id); return `<div class="badge ${got ? 'got' : ''}"><span class="badge-ic">${icon(got ? 'star' : 'lock')}</span><h3>${esc(b.name)}</h3><p>${esc(b.desc)}</p></div>`; }).join('')}</section>
     <section class="card danger-zone"><h3>Reiniciar progreso</h3><p class="muted">Borra lecciones completadas, puntos, rachas e insignias de este navegador. No se puede deshacer.</p><button class="btn btn-ghost" id="reset-all">Borrar todo mi progreso</button><span id="reset-confirm" hidden> ¿Seguro? <button class="btn btn-small" id="reset-yes">Sí, borrar</button></span></section>`;
     $('#reset-all').addEventListener('click', () => { $('#reset-confirm').hidden = false; });
-    $('#reset-yes').addEventListener('click', () => { const theme = state.theme; state = { completed: [], xp: 0, streak: 0, bestStreak: 0, lastDay: null, practice: {}, quiz: {}, daily: {}, badges: [], theme, last: null, measures: DEFAULT_MEASURES.slice(), visual: { type: 'bar', axis: 'Region', measure: 'Ventas Totales' }, slicers: {}, drafts: {} }; save(); renderTopbar(); go('inicio'); toast('Progreso borrado'); });
+    $('#reset-yes').addEventListener('click', () => { state = freshState(state.theme); save(); renderTopbar(); go('inicio'); toast('Progreso borrado'); });
+  }
+
+  /* ============================================================ repaso espaciado */
+  const BOX_LABELS = ['Mañana', '3 días', '1 semana', '2 semanas', '1 mes', '2 meses'];
+  function renderReview(app, summary) {
+    const due = dueIds();
+    const deckIds = Object.keys(state.srs).filter(id => SRS_ITEMS[id]);
+    const boxes = INTERVALS.map((_, b) => deckIds.filter(id => state.srs[id].box === b).length);
+    const maxBox = Math.max(1, ...boxes);
+    const mastered = deckIds.filter(id => state.srs[id].box >= 3).length;
+    const upcoming = deckIds.map(id => state.srs[id].due).filter(d => d > today()).sort();
+    const nextDue = upcoming[0];
+    const nextCount = upcoming.filter(d => d === nextDue).length;
+    app.innerHTML = `<section class="page-head">
+      <p class="eyebrow">${icon('flame')} Repaso espaciado</p>
+      <h1>Repasa justo antes de olvidar</h1>
+      <p class="lead">Cada pregunta que respondes vive en una caja. Si aciertas sube a la siguiente y vuelve más tarde; si fallas regresa a la primera y vuelve mañana. Así dedicas tu tiempo a lo que todavía no dominas.</p>
+    </section>
+    <section class="stats">
+      <div class="stat"><span class="stat-n">${due.length}</span><span class="stat-l">pendientes hoy</span></div>
+      <div class="stat"><span class="stat-n">${deckIds.length}</span><span class="stat-l">preguntas en tu repaso</span></div>
+      <div class="stat"><span class="stat-n">${mastered}</span><span class="stat-l">dominadas (2 semanas o más)</span></div>
+      <div class="stat"><span class="stat-n">${(state.reviewCorrect || 0).toLocaleString('es-MX')}</span><span class="stat-l">aciertos en repasos</span></div>
+    </section>
+    <div class="review-layout">
+      <section id="review-area" class="review-area"></section>
+      <aside class="card boxes">
+        <p class="eyebrow">Tus cajas</p>
+        <p class="muted small">Cuándo vuelve cada pregunta después de acertarla.</p>
+        ${boxes.map((n, b) => `<div class="box-row"><span class="box-l">${BOX_LABELS[b]}</span><span class="box-bar"><span style="width:${Math.round(100 * n / maxBox)}%"></span></span><span class="box-n">${n}</span></div>`).join('')}
+      </aside>
+    </div>`;
+    const area = $('#review-area');
+    let html = summary || '';
+    if (!deckIds.length) {
+      const first = ALL_LESSONS.find(l => !state.completed.includes(l.id)) || ALL_LESSONS[0];
+      html += `<div class="card review-empty"><h3>Tu repaso está vacío</h3><p class="muted">Las preguntas entran aquí cuando respondes un reto rápido en una lección, el reto del día o un examen. Empieza por una lección y vuelve mañana.</p><a class="btn btn-primary" href="#${first.id}">${icon('play')}Ir a ${esc(first.title)}</a></div>`;
+    } else if (due.length) {
+      html += `<div class="card review-start"><h3>${due.length} ${due.length === 1 ? 'pregunta te espera' : 'preguntas te esperan'} hoy</h3><p class="muted">Unos ${Math.max(1, Math.round(due.length * 0.5))} minutos. Las que falles se repiten al final de la sesión y vuelven mañana.</p><button class="btn btn-primary" id="start-review">${icon('play')}Empezar el repaso</button></div>`;
+    } else {
+      html += `<div class="card review-start"><h3>Nada pendiente hoy</h3><p class="muted">${nextDue ? `Tu próximo repaso es el ${esc(fmtDate(nextDue))}, con ${nextCount} ${nextCount === 1 ? 'pregunta' : 'preguntas'}.` : ''} Si quieres practicar ahora, puedes repasar diez preguntas al azar sin cambiar tu calendario.</p><button class="btn btn-ghost" id="practice-review">${icon('play')}Practicar sin afectar el calendario</button></div>`;
+    }
+    area.innerHTML = html;
+    const sb = $('#start-review'); if (sb) sb.addEventListener('click', () => startReview(app, due, false));
+    const pb = $('#practice-review'); if (pb) pb.addEventListener('click', () => startReview(app, shuffle(deckIds).slice(0, 10), true));
+  }
+  function startReview(app, ids, practiceMode) {
+    const s = { queue: shuffle(ids).map(id => ({ id, retry: false })), pos: 0, correct: 0, answered: 0, practiceMode, xp: 0 };
+    showReviewCard(app, s);
+  }
+  function showReviewCard(app, s) {
+    const area = $('#review-area');
+    if (!area) return;
+    if (s.pos >= s.queue.length) return finishReview(app, s);
+    const { id, retry } = s.queue[s.pos];
+    const it = SRS_ITEMS[id];
+    const src = it.lesson ? LESSONS[it.lesson] : null;
+    const order = shuffle(it.options.map((_, i) => i));
+    area.innerHTML = `<div class="review-card" style="--tc: var(--${it.track})">
+      <div class="review-top"><span class="chip chip-track">${icon(it.track)} ${esc(TRACKS[it.track].name)}</span>${retry ? '<span class="chip chip-warn">Segunda vuelta</span>' : ''}${s.practiceMode ? '<span class="chip">Práctica libre</span>' : ''}<span class="review-count">${s.pos + 1} de ${s.queue.length}</span></div>
+      <div class="review-bar"><span style="width:${Math.round(100 * s.pos / s.queue.length)}%"></span></div>
+      <h3>${esc(it.q).replace(/\n/g, '<br>')}</h3>
+      <div class="options">${order.map(i => `<button class="opt" data-i="${i}">${esc(it.options[i])}</button>`).join('')}</div>
+      <p class="explain" hidden>${esc(it.explain)}${src ? ` <a href="#${src.id}">Repasar la lección «${esc(src.title)}»</a>` : ''}</p>
+      <div class="review-next" hidden><span class="muted small next-when"></span><button class="btn btn-primary next">Siguiente</button></div>
+    </div>`;
+    const card = $('.review-card', area);
+    $$('.opt', card).forEach(b => b.addEventListener('click', () => {
+      const i = +b.dataset.i, right = i === it.answer;
+      $$('.opt', card).forEach(o => { o.disabled = true; const k = +o.dataset.i; o.classList.toggle('right', k === it.answer); o.classList.toggle('wrong', k === i && !right); });
+      if (!retry) {
+        s.answered++;
+        if (right) { s.correct++; if (!s.practiceMode) { s.xp += 10; state.reviewCorrect = (state.reviewCorrect || 0) + 1; } }
+        if (!s.practiceMode) { srsRecord(id, right, true); save(); }
+        if (!right) s.queue.push({ id, retry: true });
+      }
+      $('.explain', card).hidden = false;
+      $('.next-when', card).textContent = s.practiceMode ? '' : retry ? (right ? 'Bien. Mañana la vuelves a ver para fijarla.' : 'Volverá mañana.') : right ? `Volverá el ${fmtDate(state.srs[id].due)}.` : 'Volverá mañana. Antes de terminar te la vuelvo a preguntar.';
+      $('.review-next', card).hidden = false;
+      const nx = $('.next', card); nx.focus();
+      nx.addEventListener('click', () => { s.pos++; showReviewCard(app, s); });
+    }));
+  }
+  function finishReview(app, s) {
+    if (s.xp) addXP(s.xp, `Repaso: ${s.correct} de ${s.answered} correctas`); else { touchStreak(); save(); renderTopbar(); }
+    const pct = s.answered ? Math.round(100 * s.correct / s.answered) : 0;
+    const summary = `<div class="card review-summary"><p class="eyebrow">${icon('check')} Repaso terminado</p><h3>${s.correct} de ${s.answered} correctas a la primera (${pct}%)</h3><p class="muted">${s.practiceMode ? 'Fue una práctica libre: tu calendario no cambió.' : pct >= 80 ? 'Buen nivel de retención. Las acertadas vuelven más espaciadas.' : 'Las que fallaste vuelven mañana. Si alguna se repite, abre su lección desde la explicación.'}</p></div>`;
+    renderReview(app, summary);
+  }
+
+  /* ============================================================ exámenes finales */
+  function renderExam(app, t) {
+    const ex = t.exam, st = state.exams[t.id], p = trackProgress(t);
+    app.innerHTML = `<section class="page-head exam-head" style="--tc: var(--${t.id})">
+      <p class="crumbs"><a href="#inicio">Inicio</a> › <a href="#${t.id}">${esc(t.name)}</a> › Examen final</p>
+      <p class="eyebrow" style="color: var(--tc)">${icon('target')} Examen final</p>
+      <h1>Examen final de ${esc(t.name)}</h1>
+      <p class="lead">Preguntas nuevas, distintas de los retos de las lecciones, para comprobar que puedes aplicar lo aprendido. No hay pistas ni soluciones a la vista. Al terminar ves tu nota, qué fallaste y qué lecciones repasar.</p>
+      <ul class="exam-facts">
+        <li><b>${ex.questions.length}</b> preguntas de opción múltiple</li>
+        <li><b>${ex.tasks.length}</b> tareas prácticas que valen doble</li>
+        <li>Se aprueba con <b>${ex.passMark}%</b></li>
+        <li>Unos <b>45</b> minutos</li>
+      </ul>
+      ${st ? `<p class="exam-status">${st.passed ? `<span class="chip chip-done">${icon('check')} Aprobado</span>` : `<span class="chip chip-warn">Aún no aprobado</span>`} Mejor nota: <b>${st.best}%</b> · Último intento: ${st.last}% · ${st.attempts} ${st.attempts === 1 ? 'intento' : 'intentos'}</p>` : ''}
+      ${p.done < p.total ? `<p class="muted small">Te faltan ${p.total - p.done} lecciones de esta ruta. Puedes presentarlo igual: las preguntas que falles te dirán qué estudiar.</p>` : ''}
+      <div class="cta-row"><button class="btn btn-primary" id="start-exam">${icon('play')}${st ? 'Volver a presentarlo' : 'Empezar el examen'}</button><a class="btn btn-ghost" href="#chuleta-${t.id}">${icon('book')}Repasar la chuleta antes</a></div>
+    </section>
+    <section id="exam-area"></section>`;
+    $('#start-exam').addEventListener('click', () => startExam(app, t));
+  }
+  function startExam(app, t) {
+    const ex = t.exam;
+    const att = { qs: shuffle(ex.questions.map((_, qi) => qi)).map(qi => ({ qi, order: shuffle(ex.questions[qi].options.map((_, i) => i)) })), answers: {}, tasks: {} };
+    $('#start-exam').closest('.cta-row').hidden = true;
+    const area = $('#exam-area');
+    area.innerHTML = `<div class="exam-body" style="--tc: var(--${t.id})">
+      ${att.qs.map((x, n) => { const q = ex.questions[x.qi]; return `<div class="exam-q card" data-qi="${x.qi}">
+        <p class="eyebrow">Pregunta ${n + 1} de ${att.qs.length}</p>
+        <h3>${esc(q.q).replace(/\n/g, '<br>')}</h3>
+        <div class="options" role="radiogroup">${x.order.map(i => `<button class="opt" role="radio" aria-checked="false" data-i="${i}">${esc(q.options[i])}</button>`).join('')}</div>
+      </div>`; }).join('')}
+      ${ex.tasks.map((task, k) => practiceHTML(task, 'x' + k, { lang: t.runtime, title: `Tarea práctica ${k + 1} de ${ex.tasks.length} · vale el doble`, exam: true })).join('')}
+      <div class="exam-foot card">
+        <p id="exam-progress" class="muted"></p>
+        <div class="cta-row"><button class="btn btn-primary" id="submit-exam">${icon('check')}Entregar examen</button></div>
+        <div id="exam-confirm" hidden></div>
+      </div>
+    </div>`;
+    const progress = () => { $('#exam-progress').textContent = `Respondidas: ${Object.keys(att.answers).length} de ${att.qs.length} preguntas · Tareas superadas: ${Object.keys(att.tasks).length} de ${ex.tasks.length}. Puedes cambiar tus respuestas hasta entregar.`; };
+    $$('.exam-q', area).forEach(qEl => {
+      const qi = +qEl.dataset.qi;
+      $$('.opt', qEl).forEach(b => b.addEventListener('click', () => {
+        att.answers[qi] = +b.dataset.i;
+        $$('.opt', qEl).forEach(o => { const on = o === b; o.classList.toggle('selected', on); o.setAttribute('aria-checked', on ? 'true' : 'false'); });
+        progress();
+      }));
+    });
+    ex.tasks.forEach((task, k) => mountPractice(task, 'x' + k, { lang: t.runtime, exam: true, label: 'Editor de la tarea ' + (k + 1), onPass: () => { att.tasks[k] = true; progress(); } }));
+    progress();
+    area.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+    $('#submit-exam').addEventListener('click', () => {
+      const missing = att.qs.length - Object.keys(att.answers).length;
+      const box = $('#exam-confirm');
+      if (missing && box.hidden) {
+        box.hidden = false;
+        box.innerHTML = `<p class="result bad">Te faltan ${missing} ${missing === 1 ? 'pregunta' : 'preguntas'} sin responder; cuentan como incorrectas. <button class="btn btn-small" id="force-submit">Entregar de todas formas</button> <button class="btn btn-small btn-text" id="keep-going">Seguir respondiendo</button></p>`;
+        $('#force-submit').addEventListener('click', () => gradeExam(app, t, att));
+        $('#keep-going').addEventListener('click', () => { box.hidden = true; });
+        return;
+      }
+      gradeExam(app, t, att);
+    });
+  }
+  function gradeExam(app, t, att) {
+    const ex = t.exam;
+    const results = att.qs.map(x => { const q = ex.questions[x.qi]; const pick = att.answers[x.qi]; return { qi: x.qi, q, pick, right: pick === q.answer }; });
+    const correct = results.filter(r => r.right).length;
+    const tasksOk = Object.keys(att.tasks).length;
+    const score = Math.round(100 * (correct + 2 * tasksOk) / (ex.questions.length + 2 * ex.tasks.length));
+    const prev = state.exams[t.id];
+    const passedNow = score >= ex.passMark;
+    state.exams[t.id] = { best: Math.max(score, prev ? prev.best : 0), last: score, passed: !!(prev && prev.passed) || passedNow, date: today(), attempts: (prev ? prev.attempts : 0) + 1 };
+    results.forEach(r => srsRecord(`E:${t.id}:${r.qi}`, r.right, false));
+    save();
+    if (passedNow && !(prev && prev.passed)) addXP(150, 'Examen de ' + t.name + ' aprobado'); else { touchStreak(); save(); renderTopbar(); checkBadges(); }
+    const wrong = results.filter(r => !r.right);
+    const byLesson = {};
+    wrong.forEach(r => { byLesson[r.q.lesson] = (byLesson[r.q.lesson] || 0) + 1; });
+    const lessonsToReview = Object.entries(byLesson).sort((a, b) => b[1] - a[1]);
+    const area = $('#exam-area');
+    area.innerHTML = `<div class="exam-result card ${passedNow ? 'pass' : 'fail'}" style="--tc: var(--${t.id})">
+      <div class="score-ring">${ring(score, 132, 11)}<div><b>${score}%</b><span>${passedNow ? 'Aprobado' : 'No aprobado'}</span></div></div>
+      <div class="score-text">
+        <p class="eyebrow">${passedNow ? icon('check') + ' Examen aprobado' : 'Resultado'}</p>
+        <h2>${passedNow ? `Dominas lo esencial de ${esc(t.name)}` : `Te faltan ${ex.passMark - score} puntos para aprobar`}</h2>
+        <p>${correct} de ${ex.questions.length} preguntas correctas · ${tasksOk} de ${ex.tasks.length} tareas prácticas superadas.</p>
+        <p class="muted small">Las preguntas que fallaste ya están en tu repaso para mañana; las acertadas volverán en unos días.</p>
+        <div class="cta-row"><button class="btn btn-ghost" id="retake">Volver a presentarlo</button><a class="btn btn-ghost" href="#repaso">${icon('flame')}Ir a mi repaso</a></div>
+      </div>
+    </div>
+    ${lessonsToReview.length ? `<section class="card exam-review"><p class="eyebrow">Qué repasar primero</p><ul class="review-lessons">${lessonsToReview.map(([lid, n]) => { const l = LESSONS[lid]; return `<li><a href="#${lid}">${esc(l ? l.title : lid)}</a><span class="muted small">${n} ${n === 1 ? 'fallo' : 'fallos'}</span></li>`; }).join('')}</ul></section>` : ''}
+    ${wrong.length ? `<section class="exam-wrong"><p class="eyebrow">Tus errores, explicados</p>${wrong.map(r => `<div class="card wrong-item"><h3>${esc(r.q.q).replace(/\n/g, '<br>')}</h3>
+      <p><span class="chip chip-bad">Tu respuesta</span> ${r.pick === undefined ? '<i>Sin responder</i>' : esc(r.q.options[r.pick])}</p>
+      <p><span class="chip chip-done">Correcta</span> ${esc(r.q.options[r.q.answer])}</p>
+      <p class="explain">${esc(r.q.explain)}</p></div>`).join('')}</section>` : ''}`;
+    $('#retake').addEventListener('click', () => renderExam(app, t));
+    window.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' });
+  }
+
+  /* ============================================================ proyectos integradores */
+  const KIND = { sql: { label: 'SQL', lang: 'sql', tc: 'sql' }, python: { label: 'Python', lang: 'python', tc: 'python' }, dax: { label: 'Power BI · DAX', lang: 'dax', tc: 'powerbi' }, desktop: { label: 'Power BI Desktop', lang: null, tc: 'powerbi' } };
+  const projKey = (pr, i) => `proj:${pr.id}:${i}`;
+  const projProgress = pr => { const steps = pr.steps.map((s, i) => [s, i]).filter(([s]) => s.kind !== 'desktop'); return { done: steps.filter(([, i]) => state.practice[projKey(pr, i)]).length, total: steps.length }; };
+  function toCSV(rs) {
+    const cell = v => { if (v === null || v === undefined) return ''; const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    return [rs.columns.map(cell).join(','), ...rs.values.map(r => r.map(cell).join(','))].join('\n');
+  }
+  const projCache = {};
+  async function projectData(pr) {
+    if (projCache[pr.id]) return projCache[pr.id];
+    const db = await RT.pristine();
+    const q = sql => { const r = db.exec(sql); return r.length ? r[r.length - 1] : { columns: [], values: [] }; };
+    const dataset = q(C.projectDatasetSQL);
+    const stepResults = {};
+    pr.steps.forEach((s, i) => { if (s.kind === 'sql') stepResults[i] = q(s.practice.solution); });
+    db.close();
+    const daxData = { columns: dataset.columns, rows: dataset.values.map(v => Object.fromEntries(dataset.columns.map((c, k) => [c, v[k]]))) };
+    projCache[pr.id] = { dataset, stepResults, daxData };
+    return projCache[pr.id];
+  }
+  function renderProjects(app) {
+    app.innerHTML = `<section class="page-head">
+      <p class="eyebrow">${icon('target')} Demuestra lo aprendido</p>
+      <h1>Proyectos y exámenes</h1>
+      <p class="lead">En el trabajo real las herramientas no van por separado: se extrae con SQL, se analiza con Python y se presenta en Power BI. Cada proyecto recorre ese flujo completo con los mismos datos y termina en un panel que puedes construir en Power BI Desktop.</p>
+    </section>
+    <section class="projects">${(C.projects || []).map(pr => { const pp = projProgress(pr); const st = state.projects[pr.id] || {}; return `
+      <a class="project-card" href="#proyecto-${pr.id}">
+        <div class="project-top"><span class="chip">${pr.minutes} min · ${esc(pr.level)}</span>${st.done ? `<span class="chip chip-done">${icon('check')} Completado</span>` : pp.done ? `<span class="chip chip-warn">${pp.done} de ${pp.total} pasos</span>` : ''}</div>
+        <h2>${esc(pr.title)}</h2>
+        <p>${esc(pr.summary)}</p>
+        <div class="flow">${pr.steps.map((s, i) => `<span class="flow-step ${state.practice[projKey(pr, i)] ? 'ok' : ''}" style="--tc: var(--${KIND[s.kind].tc})">${esc(KIND[s.kind].label)}</span>`).join('<span class="flow-arrow">›</span>')}</div>
+        <span class="link">${st.done ? 'Revisar el proyecto' : pp.done ? 'Continuar el proyecto' : 'Empezar el proyecto'} ${icon('arrow')}</span>
+      </a>`; }).join('')}</section>
+    <section class="page-head small-head"><p class="eyebrow">${icon('target')} Exámenes finales</p><h2>Un examen por ruta</h2><p class="muted">Preguntas nuevas y tareas prácticas sin pistas. Se aprueba con 70% y lo puedes repetir las veces que quieras.</p></section>
+    <section class="exam-list">${C.tracks.filter(t => t.exam).map(examCardHTML).join('')}</section>`;
+  }
+  async function renderProject(app, pr) {
+    const st = state.projects[pr.id] = state.projects[pr.id] || { done: false, checklist: {} };
+    st.checklist = st.checklist || {};
+    const headProgress = () => { const pp = projProgress(pr); return `<div class="proj-progress"><span class="box-bar"><span style="width:${Math.round(100 * pp.done / pp.total)}%"></span></span><span>${pp.done} de ${pp.total} pasos comprobados${st.done ? ` · <b>${icon('check')} Proyecto completado</b>` : ''}</span></div>`; };
+    app.innerHTML = `<section class="page-head proj-head">
+      <p class="crumbs"><a href="#inicio">Inicio</a> › <a href="#proyectos">Proyectos</a> › ${esc(pr.title)}</p>
+      <p class="eyebrow">${icon('lab')} Proyecto integrador · ${pr.minutes} min · ${esc(pr.level)}</p>
+      <h1>${esc(pr.title)}</h1>
+      <div class="proj-brief">
+        <div><h3>El caso</h3><p>${esc(pr.context)}</p></div>
+        <div><h3>Entregable</h3><p>${esc(pr.deliverable)}</p><h3>Vas a practicar</h3><div class="chips">${pr.skills.map(s => `<span class="chip">${esc(s)}</span>`).join('')}</div></div>
+      </div>
+      <div id="proj-progress">${headProgress()}</div>
+    </section>
+    <div id="proj-steps" class="proj-steps"><p class="muted">Preparando los datos del proyecto…</p></div>`;
+    let data;
+    try { data = await projectData(pr); }
+    catch (e) { $('#proj-steps').innerHTML = `<p class="err">No se pudieron cargar los datos: ${esc(e.message || e)}. Revisa tu conexión y recarga la página.</p>`; return; }
+    const r = route(); if (r.view !== 'project' || r.id !== pr.id) return;
+    const measures = window.DAX.makeMeasures(pr.measures);
+    const practiceFor = (s) => {
+      if (s.kind !== 'python') return s.practice;
+      const csv = toCSV(data.stepResults[s.feedsFrom]);
+      return { ...s.practice, starter: s.practice.starter.replace('{{CSV}}', csv), solution: s.practice.solution.replace('{{CSV}}', csv) };
+    };
+    const host = $('#proj-steps');
+    host.innerHTML = pr.steps.map((s, i) => {
+      const k = KIND[s.kind]; const passed = !!state.practice[projKey(pr, i)];
+      const inputNote = s.kind === 'python' ? `<p class="muted small">Datos de entrada: ${data.stepResults[s.feedsFrom].values.length} filas, el resultado de la consulta del paso ${s.feedsFrom + 1}.</p>` : '';
+      return `<section class="proj-step ${passed ? 'done' : ''}" id="step-${i}" style="--tc: var(--${k.tc})">
+        <div class="step-rail"><span class="step-num">${passed ? icon('check') : i + 1}</span></div>
+        <div class="step-body">
+          <div class="step-head"><span class="chip chip-track">${esc(k.label)}</span><h2>${esc(s.title)}</h2></div>
+          <p class="step-explain">${esc(s.explain)}</p>
+          ${inputNote}
+          ${s.kind === 'desktop' ? desktopStepHTML(pr, s, i) : practiceHTML(practiceFor(s), 'p' + i, { lang: k.lang, title: 'Tu tarea', passed })}
+        </div>
+      </section>`;
+    }).join('');
+    pr.steps.forEach((s, i) => {
+      if (s.kind === 'desktop') return bindDesktopStep(pr, s, i, data, st);
+      mountPractice(practiceFor(s), 'p' + i, {
+        lang: KIND[s.kind].lang, draftKey: projKey(pr, i), label: 'Editor del paso ' + (i + 1),
+        dax: s.kind === 'dax' ? { data: data.daxData, measures } : null,
+        onPass: () => {
+          const key = projKey(pr, i);
+          if (state.practice[key]) return;
+          state.practice[key] = true; save();
+          addXP(60, 'Paso ' + (i + 1) + ' del proyecto superado');
+          const sec = $('#step-' + i); sec.classList.add('done'); $('.step-num', sec).innerHTML = icon('check');
+          const pp = projProgress(pr);
+          if (pp.done === pp.total && !st.done) { st.done = true; save(); addXP(200, 'Proyecto completado: ' + pr.title); setTimeout(() => toast('Proyecto completado', 'Ahora llévalo a Power BI Desktop en el último paso'), 700); }
+          $('#proj-progress').innerHTML = headProgress();
+        }
+      });
+    });
+  }
+  function desktopStepHTML(pr, s, i) {
+    const st = state.projects[pr.id];
+    const doneN = s.checklist.filter((_, k) => st.checklist[k]).length;
+    return `<div class="desktop-step">
+      <div class="dl-row"><button class="btn btn-primary" id="dl-${i}">${icon('arrow')}Descargar ${esc(s.download.name)}</button><button class="btn btn-ghost" id="copy-${i}">${icon('copy')}Copiar CSV</button></div>
+      <p class="muted small">Si tu navegador bloquea la descarga, usa Copiar CSV y pégalo en un archivo nuevo con extensión .csv.</p>
+      <textarea class="csv-fallback" id="csv-${i}" rows="6" readonly hidden aria-label="Contenido CSV"></textarea>
+      <div class="preview card"><p class="eyebrow">Vista previa del resultado esperado</p><p class="muted small" id="preview-cap-${i}"></p><div class="chart-host" id="preview-${i}"></div></div>
+      <div class="checklist"><p class="eyebrow">Lista de verificación · <span id="ck-n-${i}">${doneN} de ${s.checklist.length}</span></p>
+        ${s.checklist.map((c, k) => `<label class="ck"><input type="checkbox" id="ck-${pr.id}-${k}" data-k="${k}" ${st.checklist[k] ? 'checked' : ''}><span>${esc(c)}</span></label>`).join('')}
+      </div>
+    </div>`;
+  }
+  function bindDesktopStep(pr, s, i, data, st) {
+    const rs = s.download.source === 'dataset' ? data.dataset : data.stepResults[+s.download.source.replace('step', '')];
+    const csv = toCSV(rs);
+    $('#dl-' + i).addEventListener('click', () => {
+      try {
+        const url = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
+        const a = document.createElement('a'); a.href = url; a.download = s.download.name; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        toast('Descarga iniciada', `${s.download.name} · ${rs.values.length} filas`);
+      } catch (e) { toast('No se pudo descargar', 'Usa Copiar CSV'); }
+    });
+    $('#copy-' + i).addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(csv); toast('CSV copiado', `${rs.values.length} filas`); }
+      catch (e) { const ta = $('#csv-' + i); ta.hidden = false; ta.value = csv; ta.focus(); ta.select(); toast('Selecciona y copia', 'El texto ya está seleccionado'); }
+    });
+    $$(`.ck input`, $('#step-' + i)).forEach(cb => cb.addEventListener('change', () => {
+      st.checklist[+cb.dataset.k] = cb.checked; save();
+      $('#ck-n-' + i).textContent = `${s.checklist.filter((_, k) => st.checklist[k]).length} de ${s.checklist.length}`;
+      if (s.checklist.every((_, k) => st.checklist[k]) && !st.deliverable) { st.deliverable = true; save(); addXP(100, 'Panel terminado en Power BI Desktop'); }
+    }));
+    const prevHost = $('#preview-' + i), cap = $('#preview-cap-' + i);
+    if (s.preview === 'monthly') {
+      const meses = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+      const vals = meses.map((_, m) => data.daxData.rows.filter(r => r['Año'] === 2024 && r.Mes === m + 1 && r.Estado === 'Entregado').reduce((t, r) => t + r.Ventas, 0));
+      cap.textContent = 'Ventas Totales por mes de 2024, solo pedidos entregados. Así debe verse tu gráfico de líneas.';
+      renderChart(prevHost, { type: 'line', categories: meses, values: vals, label: 'Ventas Totales', axisLabel: 'Mes' });
+    } else if (s.preview === 'segments') {
+      const res = data.stepResults[0]; const ci = res.columns.indexOf('ultima_compra'), pi = res.columns.indexOf('pedidos');
+      const corte = Date.UTC(2024, 11, 31);
+      const seg = row => { const d = Math.round((corte - Date.parse(row[ci] + 'T00:00:00Z')) / 86400000); return d > 180 ? 'Perdido' : d > 60 ? 'En riesgo' : row[pi] >= 10 ? 'Leal' : 'Activo'; };
+      const order = ['Leal', 'Activo', 'En riesgo', 'Perdido'];
+      const counts = order.map(o => res.values.filter(v => seg(v) === o).length);
+      cap.textContent = 'Clientes por segmento. Tu gráfico de barras en Power BI debe dar los mismos conteos que el paso 2.';
+      renderChart(prevHost, { type: 'bar', categories: order, values: counts, label: 'Clientes', axisLabel: 'Segmento' });
+    }
   }
 
   /* ============================================================ laboratorios */
