@@ -9,7 +9,7 @@ Plataforma web para aprender **Python, SQL y Power BI** con práctica real en el
 
 ## Ver en línea
 
-La página se publica con GitHub Pages desde la rama `main`. Abre `https://<usuario>.github.io/dataforja/`.
+La página se publica con GitHub Pages desde la rama `main`: **<https://anderx08.github.io/DataForja/>**
 
 ## Ejecutar en local
 
