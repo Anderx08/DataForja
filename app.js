@@ -986,8 +986,34 @@
           </details></section>`;
         })() : ''}
 
+        ${l.guide ? `<section class="guides">
+          <p class="eyebrow">Cómo se usa</p>
+          ${l.guide.map((g, gi) => `<article class="guide">
+            <h2>${esc(g.name)}</h2>
+            <div class="guide-grid">
+              <div class="guide-syntax">
+                <p class="guide-label">Sintaxis</p>
+                <pre class="pf-code"><code>${highlight(g.syntax, 'sql')}</code></pre>
+                <dl class="parts">${g.parts.map(([k, v]) => `<div><dt><code>${esc(k)}</code></dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+              </div>
+              <div class="guide-side">
+                <div><p class="guide-label">Cuándo usarla</p><p>${esc(g.when)}</p></div>
+                <div><p class="guide-label">Cómo se lee en español</p><p class="read">«${esc(g.read)}»</p></div>
+              </div>
+            </div>
+            ${g.demo ? `<div class="demo-ba" id="demo-${gi}">
+              <p class="guide-label">${g.demo.before ? 'Antes y después, con datos reales' : 'Resultado con datos reales'}</p>
+              <div class="ba-grid ${g.demo.before ? '' : 'single'}">
+                ${g.demo.before ? `<div class="ba-col"><p class="ba-h">Antes</p><pre class="ba-q"><code>${highlight(g.demo.before, 'sql')}</code></pre><div class="ba-out"><p class="muted small">Cargando…</p></div></div><div class="ba-arrow" aria-hidden="true">›</div>` : ''}
+                <div class="ba-col"><p class="ba-h">${g.demo.before ? 'Después' : 'Consulta'}</p><pre class="ba-q"><code>${highlight(g.demo.after, 'sql')}</code></pre><div class="ba-out"><p class="muted small">Cargando…</p></div></div>
+              </div>
+              <p class="ba-note">${esc(g.demo.note)}</p>
+            </div>` : ''}
+          </article>`).join('')}
+        </section>` : ''}
+
         <section class="concepts">
-          <p class="eyebrow">Concepto</p>
+          <p class="eyebrow">${l.guide ? 'Ejemplos para practicar' : 'Concepto'}</p>
           ${l.concept.map(c => `<div class="concept"><h3>${esc(c.h)}</h3>${c.p ? `<p>${esc(c.p)}</p>` : ''}${c.code ? codeBlock(c.code, c.lang || runnableLang, { runnable: !c.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}</div>`).join('')}
         </section>
 
@@ -1071,6 +1097,21 @@
     });
     // lecciones que ya cumplían los requisitos con progreso anterior
     if (!done && requirements(l).every(r => r.ok)) refreshCompletion();
+    // guías de uso: cada antes/después se calcula sobre una copia limpia de la base
+    if (l.guide) (async () => {
+      for (let gi = 0; gi < l.guide.length; gi++) {
+        const d = l.guide[gi].demo; const box = $('#demo-' + gi); if (!d || !box) continue;
+        const outs = $$('.ba-out', box); const queries = d.before ? [d.before, d.after] : [d.after];
+        for (let k = 0; k < queries.length; k++) {
+          try {
+            const db = await RT.pristine();
+            let res; try { res = db.exec(queries[k]); } finally { db.close(); }
+            const rs = res[res.length - 1];
+            outs[k].innerHTML = rs ? `${tableHTML(rs.columns, rs.values, 15)}<p class="muted small">${rs.values.length} ${rs.values.length === 1 ? 'fila' : 'filas'}</p>` : '<p class="muted small">Sin filas</p>';
+          } catch (e) { outs[k].innerHTML = `<p class="err small">${esc(sqlError(e.message))}</p>`; }
+        }
+      }
+    })();
     // base de datos visible
     const dbRef = $('.db-ref', app); if (dbRef) bindTableChips(dbRef);
     const er = $('.er-section', app); if (er) bindER(er);

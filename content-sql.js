@@ -240,6 +240,132 @@
   };
   for (const [id, list] of Object.entries(more)) if (L[id]) L[id].extra = [...(L[id].extra || []), ...list];
 
+  /* ============================================================ GUÍAS DE USO
+     Por cada instrucción: sintaxis, qué hace cada parte, cuándo usarla, cómo leerla
+     y un antes/después que se calcula con datos reales al abrir la lección. */
+  const guides = {
+    'sql-0': [
+      { name: 'SELECT * … LIMIT: mirar una tabla', syntax: 'SELECT *\nFROM nombre_tabla\nLIMIT 5;',
+        parts: [['SELECT *', 'El asterisco pide todas las columnas. Úsalo solo para explorar; en un reporte nombra las columnas.'], ['FROM nombre_tabla', 'La tabla que quieres ver. El nombre debe ser exacto.'], ['LIMIT 5', 'Muestra solo 5 filas, suficiente para entender qué hay.']],
+        when: 'Siempre que llegues a una tabla nueva: antes de filtrar o sumar, mira cómo son sus datos.',
+        read: 'Muéstrame todas las columnas de clientes, solo 5 filas.',
+        demo: { after: 'SELECT * FROM clientes LIMIT 5', note: 'Cinco filas bastan para ver los nombres de las columnas, los formatos (las fechas son AAAA-MM-DD) y que correo puede venir vacío.' } }
+    ],
+    'sql-1': [
+      { name: 'SELECT y FROM: elegir columnas', syntax: 'SELECT columna1, columna2, expresión AS alias\nFROM tabla\nLIMIT n;',
+        parts: [['SELECT', 'Empieza toda consulta. Después va la lista de columnas que quieres ver, separadas por comas, en el orden en que quieres verlas.'], ['expresión', 'Un cálculo con columnas: precio - costo, salario * 12. Se calcula fila por fila.'], ['AS alias', 'El nombre que tendrá la columna en el resultado. Opcional, pero imprescindible para las calculadas.'], ['FROM tabla', 'De qué tabla salen los datos.'], ['LIMIT n', 'Opcional. Corta el resultado a n filas.']],
+        when: 'En todas las consultas. Pide solo las columnas que necesitas: el resultado es más claro y más rápido.',
+        read: 'Dame el nombre y el margen (precio menos costo) de cada producto.',
+        demo: { before: 'SELECT * FROM productos LIMIT 4', after: 'SELECT nombre, precio - costo AS margen FROM productos LIMIT 4', note: 'Las cinco columnas originales se convierten en dos: una existente y una calculada que no existe en la tabla.' } }
+    ],
+    'sql-2': [
+      { name: 'WHERE: quedarte solo con las filas que cumplen', syntax: "SELECT columnas\nFROM tabla\nWHERE columna operador valor\n  AND otra_condición;",
+        parts: [['WHERE', 'Va después de FROM. Revisa cada fila y conserva solo las que cumplen la condición.'], ['operador', '= igual, <> distinto, > mayor, < menor, >= mayor o igual, <= menor o igual.'], ['valor', "Números tal cual (1000). Textos y fechas entre comillas simples ('Hogar', '2024-01-01')."], ['AND / OR / NOT', 'AND exige las dos condiciones, OR basta con una, NOT invierte. Si mezclas AND con OR, usa paréntesis.']],
+        when: 'Cada vez que la pregunta diga "solo los…", "los de…", "los que…": solo los pedidos cancelados, los clientes de Lima, los productos de menos de 500.',
+        read: 'Dame los productos de Hogar u Oficina que cuesten menos de 1000.',
+        demo: { before: "SELECT nombre, categoria, precio FROM productos WHERE categoria IN ('Hogar', 'Oficina')", after: "SELECT nombre, categoria, precio FROM productos WHERE categoria IN ('Hogar', 'Oficina') AND precio < 1000", note: 'La segunda condición elimina las filas de 1000 o más. Las columnas no cambian; solo desaparecen filas.' } },
+      { name: 'IN, BETWEEN, LIKE e IS NULL: atajos para condiciones', syntax: "WHERE estado IN ('Cancelado', 'Devuelto')\nWHERE precio BETWEEN 100 AND 500\nWHERE nombre LIKE 'Mar%'\nWHERE correo IS NULL",
+        parts: [['IN (lista)', 'Equivale a varios OR: estado = A OR estado = B.'], ['BETWEEN a AND b', 'Rango que incluye los dos extremos. Sirve para números y fechas.'], ['LIKE patrón', '% significa "cualquier texto" y _ "un carácter". \'Mar%\' empieza con Mar; \'%ez\' termina en ez; \'%ana%\' contiene ana.'], ['IS NULL / IS NOT NULL', 'La única forma correcta de buscar datos vacíos.']],
+        when: 'Cuando la condición tiene varios valores posibles, un rango o un patrón de texto.',
+        read: 'Dame los clientes cuyo nombre empieza con Mar.',
+        demo: { after: "SELECT nombre, ciudad FROM clientes WHERE nombre LIKE 'Mar%'", note: 'Encuentra María, Marcos, Mariana, Martín, Marta y Mario: todos empiezan con "Mar", sin importar lo que siga.' } }
+    ],
+    'sql-3': [
+      { name: 'ORDER BY y LIMIT: ordenar y quedarte con los primeros', syntax: 'SELECT columnas\nFROM tabla\nORDER BY columna1 DESC, columna2 ASC\nLIMIT n;',
+        parts: [['ORDER BY columna', 'Ordena el resultado por esa columna. Puedes usar un alias del SELECT.'], ['ASC / DESC', 'ASC de menor a mayor (o A a Z), es el valor por defecto. DESC de mayor a menor.'], ['columna2', 'Desempate: se usa solo cuando dos filas tienen el mismo valor en la primera.'], ['LIMIT n', 'Siempre al final. Con ORDER BY forma el patrón "top N".']],
+        when: 'Para cualquier ranking: los 5 más caros, los 10 clientes que más compran, los empleados más recientes.',
+        read: 'Dame los 5 empleados que más ganan.',
+        demo: { before: 'SELECT nombre, departamento, salario FROM empleados', after: 'SELECT nombre, departamento, salario FROM empleados ORDER BY salario DESC LIMIT 5', note: 'Primero se ordena toda la tabla de mayor a menor salario y después se cortan las 5 primeras filas.' } },
+      { name: 'DISTINCT: ver cada valor una sola vez', syntax: 'SELECT DISTINCT columna\nFROM tabla;',
+        parts: [['DISTINCT', 'Va justo después de SELECT y elimina las filas repetidas del resultado.'], ['columna', 'Si pones varias columnas, se eliminan las combinaciones repetidas, no cada columna por separado.']],
+        when: 'Para saber qué valores existen: qué países, qué estados, qué categorías.',
+        read: '¿En qué países tenemos clientes?',
+        demo: { before: 'SELECT pais FROM clientes LIMIT 12', after: 'SELECT DISTINCT pais FROM clientes ORDER BY pais', note: 'La columna pais tiene 40 filas con muchos México repetidos; DISTINCT las reduce a los 6 países distintos.' } }
+    ],
+    'sql-4': [
+      { name: 'Funciones agregadas: resumir muchas filas en un número', syntax: 'SELECT COUNT(*) AS filas,\n       SUM(columna) AS total,\n       AVG(columna) AS promedio,\n       MIN(columna) AS minimo,\n       MAX(columna) AS maximo\nFROM tabla;',
+        parts: [['COUNT(*)', 'Cuenta filas.'], ['COUNT(columna)', 'Cuenta solo las filas donde esa columna no es NULL.'], ['SUM / AVG', 'Suma y promedio de una columna numérica.'], ['MIN / MAX', 'El valor más pequeño y el más grande. Funciona también con fechas y textos.']],
+        when: 'Cuando la pregunta pide un total, un conteo o un promedio: cuántos pedidos hay, cuánto suma la nómina.',
+        read: '¿Cuántos empleados hay en Ventas, cuánto suman sus salarios y cuál es el promedio?',
+        demo: { before: "SELECT nombre, salario FROM empleados WHERE departamento = 'Ventas'", after: "SELECT COUNT(*) AS empleados, SUM(salario) AS nomina, AVG(salario) AS promedio FROM empleados WHERE departamento = 'Ventas'", note: 'Cinco filas se resumen en una sola. Sin GROUP BY, las agregadas siempre devuelven una fila.' } },
+      { name: 'GROUP BY: un resumen por cada grupo', syntax: 'SELECT columna_grupo,\n       AGREGADA(columna) AS alias\nFROM tabla\nGROUP BY columna_grupo;',
+        parts: [['columna_grupo', 'La columna que define los grupos: cada valor distinto será una fila del resultado.'], ['AGREGADA(columna)', 'Se calcula dentro de cada grupo por separado.'], ['GROUP BY', 'Va después de WHERE. Debe incluir todas las columnas del SELECT que no estén dentro de una agregada.']],
+        when: 'Cuando la pregunta dice "por": ventas por mes, empleados por departamento, pedidos por estado.',
+        read: 'Para cada departamento, dame cuántos empleados tiene y su salario promedio.',
+        demo: { before: 'SELECT departamento, nombre, salario FROM empleados ORDER BY departamento', after: 'SELECT departamento, COUNT(*) AS empleados, ROUND(AVG(salario), 2) AS promedio FROM empleados GROUP BY departamento', note: 'Las 12 filas se reparten en 5 montones, uno por departamento, y cada montón se resume en una fila.' } }
+    ],
+    'sql-5': [
+      { name: 'HAVING: filtrar los grupos ya resumidos', syntax: 'SELECT columna_grupo, AGREGADA(columna) AS alias\nFROM tabla\nWHERE condición_de_filas\nGROUP BY columna_grupo\nHAVING condición_con_agregada;',
+        parts: [['WHERE', 'Filtra filas antes de agrupar. No puede usar COUNT, SUM, etc.'], ['HAVING', 'Filtra grupos después de agrupar. Es donde van las condiciones con agregadas.'], ['condición_con_agregada', 'Por ejemplo COUNT(*) >= 5 o SUM(importe) > 100000.']],
+        when: 'Cuando el filtro es sobre el resumen: los países con al menos 5 clientes, los vendedores con más de 60 pedidos.',
+        read: 'Dame los países que tienen 5 clientes o más.',
+        demo: { before: 'SELECT pais, COUNT(*) AS clientes FROM clientes GROUP BY pais', after: 'SELECT pais, COUNT(*) AS clientes FROM clientes GROUP BY pais HAVING COUNT(*) >= 5', note: 'Primero se cuentan los clientes de los 6 países; HAVING descarta los grupos con menos de 5.' } }
+    ],
+    'sql-6': [
+      { name: 'JOIN: traer columnas de otra tabla', syntax: 'SELECT a.columna, b.columna\nFROM tabla_a AS a\nJOIN tabla_b AS b ON b.id = a.tabla_b_id;',
+        parts: [['tabla_a AS a', 'La tabla principal con un alias corto. El alias evita escribir el nombre completo.'], ['JOIN tabla_b AS b', 'La tabla de la que quieres traer columnas. JOIN a secas es INNER JOIN.'], ['ON b.id = a.tabla_b_id', 'La regla de emparejamiento: la clave primaria de una tabla con la clave foránea de la otra. Revísala en el diagrama.'], ['a.columna / b.columna', 'Antepón el alias para indicar de qué tabla sale cada columna.']],
+        when: 'Cuando los datos que necesitas están en dos tablas: el pedido tiene cliente_id pero tú necesitas el nombre del cliente.',
+        read: 'Para cada pedido, busca el cliente cuyo id es igual a cliente_id y dame su nombre.',
+        demo: { before: 'SELECT id, cliente_id, fecha FROM pedidos ORDER BY id LIMIT 5', after: 'SELECT p.id, p.cliente_id, c.nombre AS cliente, p.fecha FROM pedidos p JOIN clientes c ON c.id = p.cliente_id ORDER BY p.id LIMIT 5', note: 'El número cliente_id se convierte en un nombre legible. Las filas siguen siendo una por pedido.' } },
+      { name: 'LEFT JOIN: conservar las filas sin pareja', syntax: 'SELECT a.columna, b.columna\nFROM tabla_a AS a\nLEFT JOIN tabla_b AS b ON b.a_id = a.id;',
+        parts: [['LEFT JOIN', 'Conserva todas las filas de la tabla de la izquierda (la del FROM), tengan o no pareja.'], ['sin pareja', 'Las columnas de la tabla derecha quedan en NULL.'], ['WHERE b.id IS NULL', 'Patrón para encontrar "los que no tienen": clientes sin pedidos, empleados sin ventas.']],
+        when: 'Cuando no quieres perder a nadie en el resultado, o cuando buscas precisamente a los que no tienen coincidencia.',
+        read: 'Dame todos los empleados con su número de pedidos, aunque sea cero.',
+        demo: { before: 'SELECT e.nombre, COUNT(p.id) AS pedidos FROM empleados e JOIN pedidos p ON p.empleado_id = e.id GROUP BY e.id', after: 'SELECT e.nombre, COUNT(p.id) AS pedidos FROM empleados e LEFT JOIN pedidos p ON p.empleado_id = e.id GROUP BY e.id', note: 'Con JOIN solo aparecen los 5 vendedores. Con LEFT JOIN aparecen los 12 empleados; los que no venden quedan con 0.' } }
+    ],
+    'sql-7': [
+      { name: 'La receta del reporte: unir, filtrar, agrupar', syntax: 'SELECT dimension,\n       COUNT(DISTINCT p.id) AS pedidos,\n       SUM(d.cantidad * d.precio_unitario) AS total\nFROM pedidos p\nJOIN detalle_pedidos d ON d.pedido_id = p.id\nJOIN otra_tabla x ON x.id = p.otra_id\nWHERE filtro\nGROUP BY dimension\nORDER BY total DESC;',
+        parts: [['FROM pedidos JOIN detalle_pedidos', 'Une la cabecera con sus líneas: el dinero está en el detalle.'], ['JOIN otra_tabla', 'Trae la dimensión por la que quieres agrupar: cliente, producto, vendedor.'], ['WHERE', 'Filtra antes de sumar, por ejemplo solo pedidos entregados.'], ['COUNT(DISTINCT p.id)', 'Cuenta pedidos y no líneas.'], ['GROUP BY dimension', 'Una fila por cliente, producto o vendedor.']],
+        when: 'Para casi cualquier reporte de negocio: ventas por cliente, ingreso por categoría, ranking de vendedores.',
+        read: 'Para el cliente 3, dame cuántos pedidos tiene y cuánto ha comprado en total.',
+        demo: { before: 'SELECT p.id AS pedido, c.nombre AS cliente, d.cantidad * d.precio_unitario AS importe FROM pedidos p JOIN clientes c ON c.id = p.cliente_id JOIN detalle_pedidos d ON d.pedido_id = p.id WHERE c.id = 3 ORDER BY p.id LIMIT 10', after: 'SELECT c.nombre AS cliente, COUNT(DISTINCT p.id) AS pedidos, SUM(d.cantidad * d.precio_unitario) AS total FROM pedidos p JOIN clientes c ON c.id = p.cliente_id JOIN detalle_pedidos d ON d.pedido_id = p.id WHERE c.id = 3 GROUP BY c.id', note: 'Antes: una fila por línea de producto, con pedidos repetidos. Después: una sola fila con los pedidos distintos y la suma de todos los importes.' } }
+    ],
+    'sql-8': [
+      { name: 'Subconsulta: usar el resultado de otra consulta', syntax: 'SELECT columnas\nFROM tabla\nWHERE columna > (SELECT AVG(columna) FROM tabla);',
+        parts: [['( … )', 'Una consulta completa entre paréntesis. Se ejecuta primero.'], ['valor único', 'Si devuelve un solo número, la usas como cualquier número: en WHERE, en SELECT o en un cálculo.'], ['IN ( … )', 'Si devuelve una lista de valores, úsala con IN.']],
+        when: 'Cuando para responder necesitas antes un dato calculado: el promedio, el máximo, la lista de clientes que devolvieron algo.',
+        read: 'Dame los productos más caros que el precio promedio.',
+        demo: { before: 'SELECT ROUND(AVG(precio), 2) AS promedio FROM productos', after: 'SELECT nombre, precio FROM productos WHERE precio > (SELECT AVG(precio) FROM productos) ORDER BY precio DESC', note: 'La subconsulta calcula el promedio (izquierda) y la consulta principal lo usa como límite (derecha).' } },
+      { name: 'WITH: ponerle nombre a un paso intermedio', syntax: 'WITH nombre_paso AS (\n    SELECT …\n)\nSELECT …\nFROM nombre_paso;',
+        parts: [['WITH nombre_paso AS', 'Define una tabla temporal con nombre que solo existe durante esta consulta.'], ['( SELECT … )', 'La consulta que calcula el paso intermedio.'], ['FROM nombre_paso', 'Abajo la usas como si fuera una tabla más. Puedes encadenar varios pasos separados por comas.']],
+        when: 'Cuando la pregunta tiene dos etapas: primero calcular el total de cada pedido y después analizar esos totales.',
+        read: 'Primero calcula el importe de cada pedido; después dime el mayor y el promedio.',
+        demo: { before: 'SELECT pedido_id, SUM(cantidad * precio_unitario) AS importe FROM detalle_pedidos GROUP BY pedido_id LIMIT 6', after: 'WITH t AS (SELECT pedido_id, SUM(cantidad * precio_unitario) AS importe FROM detalle_pedidos GROUP BY pedido_id) SELECT COUNT(*) AS pedidos, MAX(importe) AS mayor, ROUND(AVG(importe), 2) AS promedio FROM t', note: 'El paso t (izquierda, primeras filas) tiene un importe por pedido. La consulta final resume esa tabla intermedia.' } }
+    ],
+    'sql-9': [
+      { name: 'CASE WHEN: crear categorías con reglas', syntax: "CASE\n    WHEN condición1 THEN 'valor1'\n    WHEN condición2 THEN 'valor2'\n    ELSE 'valor por defecto'\nEND AS alias",
+        parts: [['WHEN … THEN …', 'Si la condición se cumple, devuelve ese valor. Se revisan en orden y gana la primera verdadera.'], ['ELSE', 'Lo que devuelve si ninguna se cumple. Sin ELSE devuelve NULL.'], ['END AS alias', 'Cierra el CASE y le pone nombre a la columna nueva.']],
+        when: 'Para clasificar (gamas de precio, antigüedad, segmentos) y para contar condicionalmente dentro de SUM.',
+        read: 'Si el precio es 3000 o más, ponle Premium; si es 800 o más, Medio; si no, Económico.',
+        demo: { before: "SELECT nombre, precio FROM productos WHERE categoria = 'Oficina'", after: "SELECT nombre, precio, CASE WHEN precio >= 3000 THEN 'Premium' WHEN precio >= 800 THEN 'Medio' ELSE 'Económico' END AS gama FROM productos WHERE categoria = 'Oficina'", note: 'Las filas no cambian; se añade una columna calculada con la regla.' } },
+      { name: 'strftime: sacar partes de una fecha', syntax: "strftime('%Y', fecha)     -- año: 2024\nstrftime('%m', fecha)     -- mes: 07\nstrftime('%Y-%m', fecha)  -- año-mes: 2024-07\njulianday(f2) - julianday(f1)  -- días entre fechas",
+        parts: [["'%Y'", 'Año de cuatro dígitos.'], ["'%m' y '%d'", 'Mes y día con dos dígitos.'], ["'%Y-%m'", 'Año-mes: el formato ideal para agrupar por mes, porque se ordena bien.'], ['julianday', 'Convierte una fecha en número de días para poder restarlas.']],
+        when: 'Para agrupar por año o por mes y para calcular antigüedad o días transcurridos. En SQL Server se usa YEAR() y FORMAT(); en PostgreSQL, EXTRACT y DATE_TRUNC.',
+        read: 'De cada pedido, dame su año, su mes y su año-mes.',
+        demo: { before: 'SELECT id, fecha FROM pedidos LIMIT 4', after: "SELECT id, fecha, strftime('%Y', fecha) AS anio, strftime('%m', fecha) AS mes, strftime('%Y-%m', fecha) AS anio_mes FROM pedidos LIMIT 4", note: 'De una sola fecha salen tres columnas listas para agrupar.' } }
+    ],
+    'sql-10': [
+      { name: 'OVER: calcular sobre un grupo sin perder filas', syntax: 'FUNCIÓN(columna) OVER (\n    PARTITION BY columna_grupo\n    ORDER BY columna_orden\n) AS alias',
+        parts: [['FUNCIÓN', 'ROW_NUMBER, RANK o DENSE_RANK para numerar; SUM, AVG, COUNT para totales y promedios; LAG y LEAD para la fila anterior o la siguiente.'], ['PARTITION BY', 'Opcional. Divide las filas en grupos; el cálculo se reinicia en cada grupo.'], ['ORDER BY (dentro de OVER)', 'Opcional. Ordena dentro del grupo; necesario para rankings, acumulados y LAG.'], ['Diferencia con GROUP BY', 'GROUP BY colapsa las filas. OVER las mantiene todas y añade una columna.']],
+        when: 'Rankings por grupo, comparar cada fila con el promedio de su grupo, acumulados y variaciones contra el periodo anterior.',
+        read: 'Para cada empleado, dame su puesto dentro de su departamento y el salario promedio de ese departamento.',
+        demo: { before: "SELECT nombre, departamento, salario FROM empleados WHERE departamento IN ('Ventas', 'Logística') ORDER BY departamento", after: "SELECT nombre, departamento, salario, RANK() OVER (PARTITION BY departamento ORDER BY salario DESC) AS puesto, ROUND(AVG(salario) OVER (PARTITION BY departamento), 2) AS prom_depto FROM empleados WHERE departamento IN ('Ventas', 'Logística') ORDER BY departamento, puesto", note: 'Siguen las mismas 8 filas. Cada una gana su puesto y el promedio de su departamento, calculados por separado para Ventas y Logística.' } }
+    ],
+    'sql-11': [
+      { name: 'UPDATE: cambiar valores existentes', syntax: 'UPDATE tabla\nSET columna = nuevo_valor\nWHERE condición;',
+        parts: [['UPDATE tabla', 'La tabla que vas a modificar.'], ['SET columna = valor', 'Qué columna cambia y a qué valor. Puede usar la columna misma: precio = precio * 1.05. Varias se separan con comas.'], ['WHERE', 'Qué filas cambian. Sin WHERE cambian todas.']],
+        when: 'Corregir un dato, aplicar un aumento, actualizar un estado.',
+        read: 'Sube 5% el precio de los productos de Oficina.',
+        demo: { before: "SELECT nombre, precio FROM productos WHERE categoria = 'Oficina'", after: "UPDATE productos SET precio = ROUND(precio * 1.05, 2) WHERE categoria = 'Oficina'; SELECT nombre, precio FROM productos WHERE categoria = 'Oficina'", note: 'Antes y después del UPDATE. Esta vista usa una copia de la base, así que no altera tus ejercicios.' } },
+      { name: 'INSERT y DELETE: agregar y borrar filas', syntax: "INSERT INTO tabla (columna1, columna2)\nVALUES ('valor1', 'valor2');\n\nDELETE FROM tabla\nWHERE condición;",
+        parts: [['INSERT INTO tabla (columnas)', 'Nombra las columnas que vas a llenar; las demás quedan con su valor por defecto o NULL. El id se genera solo.'], ['VALUES (…)', 'Los valores en el mismo orden que las columnas.'], ['DELETE FROM … WHERE', 'Borra las filas que cumplen la condición. Prueba antes el mismo WHERE con un SELECT.']],
+        when: 'Dar de alta un registro nuevo o eliminar registros duplicados, de prueba u obsoletos.',
+        read: 'Agrega el producto Hub USB-C de Electrónica.',
+        demo: { after: "INSERT INTO productos (nombre, categoria, precio, costo) VALUES ('Hub USB-C', 'Electrónica', 450, 260); SELECT id, nombre, categoria, precio FROM productos ORDER BY id DESC LIMIT 3", note: 'El producto nuevo recibe el id 21 automáticamente. También en una copia de la base.' } }
+    ]
+  };
+  for (const [id, g] of Object.entries(guides)) { const lesson = sql.lessons.find(x => x.id === id); if (lesson) lesson.guide = g; }
+
   /* Plan: la lección de la base va primero */
   if (C.plan[0] && !C.plan[0].lessons.includes('sql-0')) C.plan[0].lessons.splice(2, 0, 'sql-0');
 })();
