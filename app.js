@@ -921,6 +921,102 @@
     return e;
   }
 
+  /* ============================================================ guías de uso ("Cómo se usa")
+     Demostraciones: SQL (consultas sobre copia limpia), Python (código ejecutado),
+     DAX (medidas evaluadas por grupo) y tablas fijas. */
+  const GUIDE_MEASURES = () => window.DAX.makeMeasures(DEFAULT_MEASURES);
+  function demoKind(g, lang) { return (g.demo && g.demo.kind) || lang; }
+  function staticTable(t) { return tableHTML(t.cols, t.rows, 50); }
+  function guideDemoHTML(g, gi, lang) {
+    const d = g.demo; if (!d) return '';
+    const kind = demoKind(g, lang);
+    const codeLang = kind === 'python' ? 'python' : 'sql';
+    if (kind === 'dax') {
+      return `<div class="demo-ba" id="demo-${gi}">
+        <p class="guide-label">Las medidas evaluadas en cada ${esc(d.by === 'Region' ? 'región' : d.by === 'Categoria' ? 'categoría' : d.by)}, con los datos del laboratorio</p>
+        <pre class="ba-q"><code>${highlight(d.cols.map(([n, e]) => `${n} = ${e}`).join('\n'), 'dax')}</code></pre>
+        <div class="ba-out"><p class="muted small">Calculando…</p></div>
+        <p class="ba-note">${esc(d.note)}</p>
+      </div>`;
+    }
+    if (kind === 'static') {
+      const two = !!d.before;
+      return `<div class="demo-ba" id="demo-${gi}">
+        <p class="guide-label">${two ? 'Antes y después' : 'Ejemplo'}</p>
+        <div class="ba-grid ${two ? '' : 'single'}">
+          ${two ? `<div class="ba-col"><p class="ba-h">${esc(d.beforeLabel || 'Antes')}</p><div class="ba-out">${staticTable(d.before)}</div></div><div class="ba-arrow" aria-hidden="true">›</div>` : ''}
+          <div class="ba-col">${two ? `<p class="ba-h">${esc(d.afterLabel || 'Después')}</p>` : ''}<div class="ba-out">${staticTable(d.after)}</div></div>
+        </div>
+        <p class="ba-note">${esc(d.note)}</p>
+      </div>`;
+    }
+    const isPy = kind === 'python';
+    return `<div class="demo-ba" id="demo-${gi}">
+      <p class="guide-label">${d.before ? 'Antes y después' : (isPy ? 'Ejemplo ejecutado' : 'Resultado con datos reales')}${isPy ? '' : ', con datos reales'}</p>
+      <div class="ba-grid ${d.before ? '' : 'single'}">
+        ${d.before ? `<div class="ba-col"><p class="ba-h">Antes</p><pre class="ba-q"><code>${highlight(d.before, codeLang)}</code></pre><div class="ba-out"><p class="muted small">${isPy ? 'Ejecutando…' : 'Cargando…'}</p></div></div><div class="ba-arrow" aria-hidden="true">›</div>` : ''}
+        <div class="ba-col"><p class="ba-h">${d.before ? 'Después' : (isPy ? 'Código' : 'Consulta')}</p><pre class="ba-q"><code>${highlight(d.after, codeLang)}</code></pre><div class="ba-out"><p class="muted small">${isPy ? 'Ejecutando…' : 'Cargando…'}</p></div></div>
+      </div>
+      <p class="ba-note">${esc(d.note)}</p>
+    </div>`;
+  }
+  function guidesHTML(l, lang) {
+    return `<section class="guides">
+      <p class="eyebrow">Cómo se usa</p>
+      ${l.guide.map((g, gi) => `<article class="guide">
+        <h2>${esc(g.name)}</h2>
+        <div class="guide-grid">
+          <div class="guide-syntax">
+            <p class="guide-label">Sintaxis</p>
+            <pre class="pf-code"><code>${highlight(g.syntax, g.lang || lang)}</code></pre>
+            <dl class="parts">${g.parts.map(([k, v]) => `<div><dt><code>${esc(k)}</code></dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+          </div>
+          <div class="guide-side">
+            <div><p class="guide-label">Cuándo usarla</p><p>${esc(g.when)}</p></div>
+            <div><p class="guide-label">Cómo se lee en español</p><p class="read">«${esc(g.read)}»</p></div>
+          </div>
+        </div>
+        ${guideDemoHTML(g, gi, lang)}
+      </article>`).join('')}
+    </section>`;
+  }
+  async function fillGuides(l, lang) {
+    for (let gi = 0; gi < l.guide.length; gi++) {
+      const g = l.guide[gi], d = g.demo, box = $('#demo-' + gi);
+      if (!d || !box) continue;
+      const kind = demoKind(g, lang);
+      if (kind === 'static') continue;
+      const outs = $$('.ba-out', box);
+      if (kind === 'dax') {
+        try {
+          const D = window.DAX, ms = GUIDE_MEASURES();
+          const cats = D.distinctValues(d.by);
+          const fmt = (v, pct) => v == null ? '(en blanco)' : pct ? (v * 100).toFixed(1) + '%' : D.format(typeof v === 'number' ? Math.round(v * 100) / 100 : v);
+          const row = filters => d.cols.map(([, e, p]) => { try { return fmt(D.run(e, { measures: ms, extraFilters: filters }), p === 'pct'); } catch (err) { return 'Error'; } });
+          const rows = cats.map(c => [c, ...row([D.slicerFilter(d.by, c)])]);
+          rows.push(['Total', ...row([])]);
+          outs[0].innerHTML = `<div class="tbl-wrap"><table class="tbl dax-demo"><thead><tr><th>${esc(d.by)}</th>${d.cols.map(([n]) => `<th class="num">${esc(n)}</th>`).join('')}</tr></thead><tbody>${rows.map((r, i) => `<tr class="${i === rows.length - 1 ? 'total' : ''}">${r.map((v, k) => `<td class="${k ? 'num' : ''}">${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+        } catch (e) { outs[0].innerHTML = `<p class="err small">${esc(e.message || e)}</p>`; }
+        continue;
+      }
+      const codes = d.before ? [d.before, d.after] : [d.after];
+      for (let k = 0; k < codes.length; k++) {
+        try {
+          if (kind === 'python') {
+            await RT.python();
+            const r = await runPython(codes[k], '');
+            outs[k].innerHTML = `<pre class="ba-run">${esc(r.out) || '<span class="muted">(sin salida)</span>'}</pre>${r.ok ? '' : `<pre class="ba-run err">${esc(r.err)}</pre>`}`;
+          } else {
+            const db = await RT.pristine();
+            let res; try { res = db.exec(codes[k]); } finally { db.close(); }
+            const rs = res[res.length - 1];
+            outs[k].innerHTML = rs ? `${tableHTML(rs.columns, rs.values, 15)}<p class="muted small">${rs.values.length} ${rs.values.length === 1 ? 'fila' : 'filas'}</p>` : '<p class="muted small">Sin filas</p>';
+          }
+        } catch (e) { outs[k].innerHTML = `<p class="err small">${esc(kind === 'python' ? (e.message || e) : sqlError(e.message))}</p>`; }
+      }
+    }
+  }
+
   /* ============================================================ lección */
   function renderLesson(app, l) {
     const t = TRACKS[l.track];
@@ -986,31 +1082,7 @@
           </details></section>`;
         })() : ''}
 
-        ${l.guide ? `<section class="guides">
-          <p class="eyebrow">Cómo se usa</p>
-          ${l.guide.map((g, gi) => `<article class="guide">
-            <h2>${esc(g.name)}</h2>
-            <div class="guide-grid">
-              <div class="guide-syntax">
-                <p class="guide-label">Sintaxis</p>
-                <pre class="pf-code"><code>${highlight(g.syntax, 'sql')}</code></pre>
-                <dl class="parts">${g.parts.map(([k, v]) => `<div><dt><code>${esc(k)}</code></dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
-              </div>
-              <div class="guide-side">
-                <div><p class="guide-label">Cuándo usarla</p><p>${esc(g.when)}</p></div>
-                <div><p class="guide-label">Cómo se lee en español</p><p class="read">«${esc(g.read)}»</p></div>
-              </div>
-            </div>
-            ${g.demo ? `<div class="demo-ba" id="demo-${gi}">
-              <p class="guide-label">${g.demo.before ? 'Antes y después, con datos reales' : 'Resultado con datos reales'}</p>
-              <div class="ba-grid ${g.demo.before ? '' : 'single'}">
-                ${g.demo.before ? `<div class="ba-col"><p class="ba-h">Antes</p><pre class="ba-q"><code>${highlight(g.demo.before, 'sql')}</code></pre><div class="ba-out"><p class="muted small">Cargando…</p></div></div><div class="ba-arrow" aria-hidden="true">›</div>` : ''}
-                <div class="ba-col"><p class="ba-h">${g.demo.before ? 'Después' : 'Consulta'}</p><pre class="ba-q"><code>${highlight(g.demo.after, 'sql')}</code></pre><div class="ba-out"><p class="muted small">Cargando…</p></div></div>
-              </div>
-              <p class="ba-note">${esc(g.demo.note)}</p>
-            </div>` : ''}
-          </article>`).join('')}
-        </section>` : ''}
+        ${l.guide ? guidesHTML(l, runnableLang) : ''}
 
         <section class="concepts">
           <p class="eyebrow">${l.guide ? 'Ejemplos para practicar' : 'Concepto'}</p>
@@ -1097,21 +1169,8 @@
     });
     // lecciones que ya cumplían los requisitos con progreso anterior
     if (!done && requirements(l).every(r => r.ok)) refreshCompletion();
-    // guías de uso: cada antes/después se calcula sobre una copia limpia de la base
-    if (l.guide) (async () => {
-      for (let gi = 0; gi < l.guide.length; gi++) {
-        const d = l.guide[gi].demo; const box = $('#demo-' + gi); if (!d || !box) continue;
-        const outs = $$('.ba-out', box); const queries = d.before ? [d.before, d.after] : [d.after];
-        for (let k = 0; k < queries.length; k++) {
-          try {
-            const db = await RT.pristine();
-            let res; try { res = db.exec(queries[k]); } finally { db.close(); }
-            const rs = res[res.length - 1];
-            outs[k].innerHTML = rs ? `${tableHTML(rs.columns, rs.values, 15)}<p class="muted small">${rs.values.length} ${rs.values.length === 1 ? 'fila' : 'filas'}</p>` : '<p class="muted small">Sin filas</p>';
-          } catch (e) { outs[k].innerHTML = `<p class="err small">${esc(sqlError(e.message))}</p>`; }
-        }
-      }
-    })();
+    // guías de uso: los antes/después se calculan con datos reales
+    if (l.guide) fillGuides(l, runnableLang);
     // base de datos visible
     const dbRef = $('.db-ref', app); if (dbRef) bindTableChips(dbRef);
     const er = $('.er-section', app); if (er) bindER(er);

@@ -5,6 +5,7 @@ Plataforma web para aprender **Python, SQL y Power BI** con práctica real en el
 - **37 lecciones** en tres rutas, cada una con: por qué importa, concepto, ejemplo de oficina, práctica comprobada automáticamente y reto rápido. Una lección se completa sola al superar su práctica y su reto.
 - **115 ejercicios verificados**: Python se ejecuta con [Skulpt](https://skulpt.org), SQL sobre una base SQLite real ([sql.js](https://sql.js.org)) con cinco tablas, y DAX con un motor propio que implementa contexto de filtro, `CALCULATE`, `ALL`, `FILTER`, iteradores y más.
 - **Base de datos siempre visible en SQL**: una lección inicial con el diagrama de las cinco tablas, fichas con qué guarda cada columna y filas de ejemplo, y en cada ejercicio las tablas que necesitas y la forma del resultado esperado. Los ejemplos se ejecutan ahí mismo, y cada lección explica paso a paso cómo SQL procesa la consulta y los errores más comunes.
+- **Guías "Cómo se usa"** en las tres rutas: cada instrucción con su sintaxis desglosada, cuándo usarla, cómo se lee en español y un antes/después con datos reales (consultas SQL, código Python ejecutado o medidas DAX evaluadas por grupo).
 - **Repaso espaciado**: cada pregunta respondida entra en cajas de Leitner y vuelve a los 1, 3, 7, 14, 30 y 60 días. Las fallidas se repiten al final de la sesión.
 - **Exámenes finales** por ruta: 15 preguntas nuevas y 2 tareas prácticas sin pistas, nota con aprobado al 70% y recomendación de lecciones según los errores.
 - **Proyectos integradores**: dos casos de negocio que recorren SQL, Python y DAX sobre los mismos datos y terminan con el CSV y la lista de pasos para armar el panel en Power BI Desktop.
@@ -34,7 +35,8 @@ y abre <http://localhost:8765>.
 | `content.js` | Lecciones base de las tres rutas, retos diarios, plan e insignias |
 | `content-extra.js` | Ejercicios extra, lecciones avanzadas y chuletas |
 | `content-learn.js` | Exámenes finales, proyectos integradores e insignias de evaluación |
-| `content-sql.js` | Documentación de la base, lección inicial de SQL, explicaciones paso a paso, errores comunes y ejercicios adicionales |
+| `content-sql.js` | Documentación de la base, lección inicial de SQL, guías de uso, explicaciones paso a paso, errores comunes y ejercicios adicionales |
+| `content-guides.js` | Guías de uso de Python y Power BI: sintaxis, partes, cuándo usarla y antes/después |
 | `sqldb.js` | Base de datos de práctica (esquema y datos deterministas) |
 | `dax.js` | Motor DAX didáctico |
 | `sql-wasm.wasm` | SQLite compilado a WebAssembly (sql.js 1.10.3) |
