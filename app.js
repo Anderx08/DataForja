@@ -192,13 +192,17 @@
     opts = opts || {};
     const id = 'cb' + Math.random().toString(36).slice(2, 8);
     const runnable = opts.runnable && (lang === 'python' || lang === 'sql' || lang === 'dax');
+    // Las consultas de lectura (SELECT, WITH, PRAGMA) se pueden ejecutar ahí mismo para ver qué devuelven.
+    const stripped = String(code).split('\n').filter(x => !x.trim().startsWith('--')).join('\n').trim();
+    const inline = lang === 'sql' && !opts.noRun && !/\.\.\./.test(code) && stripped && stripped.split(/;\s*\n/).every(s => /^(SELECT|WITH|PRAGMA)\b/i.test(s.trim()) || !s.trim());
     return `<div class="code" data-lang="${lang}" id="${id}">
       <div class="code-bar"><span class="code-lang">${esc(lang === 'm' ? 'Power Query M' : lang === 'dax' ? 'DAX' : lang === 'text' ? 'esquema' : lang)}</span>
         <div class="code-actions">
+          ${inline ? `<button class="btn-mini btn-mini-run" data-runsql="${id}" title="Ejecutar esta consulta aquí">${icon('play')}Ejecutar aquí</button>` : ''}
           ${runnable ? `<button class="btn-mini" data-send="${id}" title="Enviar al editor de práctica">${icon('arrow')}Al editor</button>` : ''}
           <button class="btn-mini" data-copy="${id}" title="Copiar">${icon('copy')}Copiar</button>
         </div></div>
-      <pre class="code-pre"><code data-raw="${esc(code)}">${highlight(code, lang)}</code></pre></div>`;
+      <pre class="code-pre"><code data-raw="${esc(code)}">${highlight(code, lang)}</code></pre>${inline ? '<div class="inline-out" hidden></div>' : ''}</div>`;
   }
 
   /* ============================================================ editor */
@@ -638,6 +642,114 @@
     ${t.exam ? `<section class="track-exam">${examCardHTML(t)}</section>` : ''}`;
   }
 
+  /* ============================================================ base de datos visible
+     Fichas de tablas, diagrama y recuadros "Datos para este ejercicio". */
+  const SCHEMA = C.sqlSchema || { tables: [], tips: [], company: '' };
+  const SCHEMA_T = Object.fromEntries(SCHEMA.tables.map(t => [t.name, t]));
+  function tablesIn(text) {
+    const set = new Set();
+    String(text || '').replace(/\b(?:FROM|JOIN|INTO|UPDATE|table_info\()\s*([a-z_]+)/gi, (_, n) => { if (SCHEMA_T[n.toLowerCase()]) set.add(n.toLowerCase()); return _; });
+    return SCHEMA.tables.map(t => t.name).filter(n => set.has(n));
+  }
+  function tableCardHTML(name) {
+    const t = SCHEMA_T[name];
+    return `<div class="tcard" data-table="${name}">
+      <div class="tcard-head"><b><code>${name}</code></b><span>${esc(t.desc)} ${esc(t.grain)}</span></div>
+      <div class="tbl-wrap"><table class="tbl cols"><thead><tr><th>Columna</th><th>Tipo</th><th>Qué guarda</th></tr></thead><tbody>${t.cols.map(([c, ty, d, k]) => `<tr><td><code>${c}</code>${k ? ` <span class="key key-${k.toLowerCase()}">${k}</span>` : ''}</td><td>${ty}</td><td class="wrap">${esc(d)}</td></tr>`).join('')}</tbody></table></div>
+      <button class="btn btn-small btn-ghost tsample">${icon('play')}Ver 5 filas de ejemplo</button>
+      <div class="tsample-out"></div>
+    </div>`;
+  }
+  const tableChipsHTML = names => `<div class="tchips">${names.map(n => `<button class="tchip" data-t="${n}" aria-expanded="false">${icon('sql')}${n}</button>`).join('')}</div><div class="tdetail"></div>`;
+  function bindSamples(root) {
+    $$('.tsample', root).forEach(btn => btn.addEventListener('click', async () => {
+      const card = btn.closest('.tcard'); const out = $('.tsample-out', card);
+      out.innerHTML = '<p class="muted small">Cargando…</p>';
+      try {
+        const db = await RT.pristine();
+        const r = db.exec(`SELECT * FROM ${card.dataset.table} LIMIT 5`); db.close();
+        out.innerHTML = tableHTML(r[0].columns, r[0].values) + `<p class="muted small">Así se ve la tabla con <code>SELECT * FROM ${card.dataset.table} LIMIT 5;</code></p>`;
+        btn.hidden = true;
+      } catch (e) { out.innerHTML = `<p class="err">${esc(e.message || e)}</p>`; }
+    }));
+  }
+  function bindTableChips(root) {
+    $$('.tchip', root).forEach(b => b.addEventListener('click', () => {
+      const box = b.parentElement.nextElementSibling;
+      const open = b.getAttribute('aria-expanded') === 'true';
+      $$('.tchip', b.parentElement).forEach(x => x.setAttribute('aria-expanded', 'false'));
+      if (open) { box.innerHTML = ''; return; }
+      b.setAttribute('aria-expanded', 'true');
+      box.innerHTML = tableCardHTML(b.dataset.t);
+      bindSamples(box);
+    }));
+  }
+  function erDiagram() {
+    const BW = 220, RH = 20, HH = 30;
+    const pos = { clientes: [20, 20], pedidos: [300, 20], empleados: [580, 20], productos: [20, 250], detalle_pedidos: [300, 250] };
+    const fy = (t, c) => pos[t][1] + HH + RH * SCHEMA_T[t].cols.findIndex(x => x[0] === c) + RH / 2;
+    const box = name => {
+      const [x, y] = pos[name]; const t = SCHEMA_T[name]; const h = HH + RH * t.cols.length + 6;
+      return `<g class="er-t" data-table="${name}" tabindex="0" role="button" aria-label="Ver la tabla ${name}">
+        <rect class="er-box" x="${x}" y="${y}" width="${BW}" height="${h}" rx="8"/>
+        <path class="er-head" d="M${x} ${y + 8}a8 8 0 0 1 8-8h${BW - 16}a8 8 0 0 1 8 8v${HH - 8}h-${BW}z"/>
+        <text class="er-name" x="${x + 12}" y="${y + 20}">${name}</text>
+        ${t.cols.map(([c, ty, , k], i) => { const yy = y + HH + RH * i + 14; return `<text class="er-col ${k ? 'k' : ''}" x="${x + 12}" y="${yy}">${k ? `<tspan class="er-key">${k} </tspan>` : ''}${c}</text><text class="er-type" x="${x + BW - 10}" y="${yy}" text-anchor="end">${ty}</text>`; }).join('')}
+      </g>`;
+    };
+    const lab = (x, y, s) => `<text class="er-card" x="${x}" y="${y}">${s}</text>`;
+    const y1 = fy('pedidos', 'cliente_id'), y2 = fy('clientes', 'id');
+    const y3 = fy('pedidos', 'empleado_id'), y4 = fy('empleados', 'id');
+    const y5 = fy('detalle_pedidos', 'producto_id'), y6 = fy('productos', 'id');
+    const y7 = fy('empleados', 'jefe_id'); const xr = 580 + BW;
+    const pedBottom = 20 + HH + RH * 5 + 6;
+    return `<div class="diagram-wrap"><svg viewBox="0 0 840 400" class="er" role="img" aria-label="Diagrama de la base: clientes, productos, empleados, pedidos y detalle_pedidos con sus relaciones">
+      <path class="er-rel" d="M300 ${y1} C270 ${y1}, 270 ${y2}, 240 ${y2}"/>${lab(286, y1 - 5, 'N')}${lab(244, y2 - 5, '1')}
+      <path class="er-rel" d="M520 ${y3} C550 ${y3}, 550 ${y4}, 580 ${y4}"/>${lab(524, y3 - 5, 'N')}${lab(568, y4 - 5, '1')}
+      <path class="er-rel" d="M410 250 L410 ${pedBottom}"/>${lab(416, 244, 'N')}${lab(416, pedBottom + 14, '1')}
+      <path class="er-rel" d="M300 ${y5} C270 ${y5}, 270 ${y6}, 240 ${y6}"/>${lab(286, y5 - 5, 'N')}${lab(244, y6 - 5, '1')}
+      <path class="er-rel" d="M${xr} ${y7} C${xr + 40} ${y7}, ${xr + 40} ${y4}, ${xr} ${y4}"/>${lab(xr + 4, y7 - 5, 'N')}${lab(xr + 4, y4 - 5, '1')}
+      ${Object.keys(pos).map(box).join('')}
+    </svg></div>`;
+  }
+  function erSectionHTML() {
+    return `<p class="eyebrow">Diagrama de la base de datos</p>
+      <p class="muted small">${esc(SCHEMA.company)} Toca una tabla para ver sus columnas y sus primeras filas. PK es la clave primaria, FK una clave foránea; la línea va del lado N (muchos) al lado 1.</p>
+      ${erDiagram()}
+      <div id="er-detail"></div>
+      <ul class="db-tips">${SCHEMA.tips.map(t => `<li>${esc(t)}</li>`).join('')}</ul>`;
+  }
+  function bindER(root) {
+    $$('.er-t', root).forEach(g => {
+      const open = () => { $$('.er-t', root).forEach(x => x.classList.toggle('on', x === g)); const d = $('#er-detail'); d.innerHTML = tableCardHTML(g.dataset.table); bindSamples(d); d.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'nearest' }); };
+      g.addEventListener('click', open);
+      g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    });
+  }
+  function sqlDataBoxHTML(p, sfx, exam) {
+    const names = tablesIn((p.solution || '') + ' ' + (p.verify || ''));
+    if (!names.length) return '';
+    return `<div class="data-box">
+      <p class="eyebrow">${icon('sql')} Datos para este ejercicio</p>
+      <p class="small muted">Tablas que necesitas. Toca una para ver sus columnas y filas de ejemplo.</p>
+      ${tableChipsHTML(names)}
+      ${exam ? '' : `<div class="expect small" id="expect-${sfx}">Calculando el resultado esperado…</div>`}
+    </div>`;
+  }
+  function daxDataBoxHTML(o) {
+    const data = o.dax ? o.dax.data : { columns: window.DAX.columns, rows: window.DAX.rows };
+    const names = o.dax ? [...o.dax.measures.values()].map(m => m.name) : state.measures.map(m => m.name);
+    const first = data.rows[0] || {};
+    const type = c => typeof first[c] === 'number' ? 'número' : 'texto';
+    return `<div class="data-box">
+      <p class="eyebrow">${icon('powerbi')} Datos para este ejercicio</p>
+      <p class="small">Tabla <code>Ventas</code> · ${data.rows.length.toLocaleString('es-MX')} filas · ${o.dax ? 'una fila por línea de pedido' : 'una fila por venta'}. Escribe sus columnas como <code>Ventas[Columna]</code>.</p>
+      <div class="colchips">${data.columns.map(c => `<span class="colchip">${esc(c)}<small>${type(c)}</small></span>`).join('')}</div>
+      <p class="small">Medidas que ya existen y puedes usar: ${names.map(n => `<code>[${esc(n)}]</code>`).join(' ')}</p>
+      <details class="sample-rows"><summary>Ver 5 filas de ejemplo</summary>${tableHTML(data.columns, data.rows.slice(0, 5).map(r => data.columns.map(c => r[c])))}</details>
+    </div>`;
+  }
+
   /* ============================================================ prácticas reutilizables
      Las usan las lecciones, los exámenes y los proyectos. */
   function diffHint(got, exp) {
@@ -658,6 +770,8 @@
     return `<section class="practice ${o.passed ? 'passed' : ''} ${o.extra ? 'practice-extra' : ''}" id="practice-${sfx}">
         <div class="practice-head"><p class="eyebrow">${esc(o.title)}</p>${o.passed ? `<span class="chip chip-done">${icon('check')} Superada</span>` : ''}</div>
         <p class="prompt">${esc(p.prompt)}</p>
+        ${lang === 'sql' ? sqlDataBoxHTML(p, sfx, o.exam) : ''}
+        ${lang === 'dax' && p.type !== 'visual' ? daxDataBoxHTML(o) : ''}
         ${p.type === 'visual' ? `
           <div class="cta-row"><a class="btn btn-ghost" href="#lab-powerbi">${icon('lab')}Abrir el laboratorio de Power BI</a><button class="btn btn-primary" id="check-visual-${sfx}">${icon('check')}Comprobar visual</button></div>
           <div class="result" id="result-${sfx}" hidden></div>` : `
@@ -669,6 +783,7 @@
             <button class="btn btn-ghost" id="run-${sfx}">${icon('play')}Ejecutar</button>
             ${helpers ? `<button class="btn btn-ghost" id="hint-${sfx}">Pista</button><button class="btn btn-ghost" id="solution-${sfx}">Ver solución</button>` : ''}
             <button class="btn btn-text" id="reset-${sfx}">Reiniciar</button>
+            ${p.type === 'sql-modify' ? `<button class="btn btn-text" id="resetdb-${sfx}">Restaurar base de datos</button>` : ''}
             <span class="kbd muted">Ctrl + Enter ejecuta</span>
           </div>
           <div class="hints" id="hints-${sfx}"></div>
@@ -700,6 +815,26 @@
       });
       return null;
     }
+    const sec = $('#practice-' + sfx);
+    if (sec) bindTableChips(sec);
+    if (S('resetdb')) S('resetdb').addEventListener('click', async () => { await RT.resetDb(); toast('Base de datos restaurada', 'Volvió a su estado original'); });
+    if (lang === 'sql' && S('expect')) (async () => {
+      const box = S('expect');
+      try {
+        await RT.sql();
+        if (p.type === 'sql-modify') {
+          box.innerHTML = `<b>Cómo se comprueba:</b> se restaura la base, se ejecuta tu código y se compara el resultado de esta consulta con el de la solución: <code>${esc(p.verify)}</code>`;
+          return;
+        }
+        const r = runSQL(p.solution); if (!r.ok) { box.remove(); return; }
+        const rs = sqlRows(r.results); const n = rs.values.length;
+        box.innerHTML = `<b>Resultado esperado:</b> ${n} ${n === 1 ? 'fila' : 'filas'} con ${rs.columns.length === 1 ? 'la columna' : `${rs.columns.length} columnas`}: ${rs.columns.map(c => `<code>${esc(c)}</code>`).join(', ')}${p.ordered ? ', en el orden que pide el enunciado' : ''}. <button class="btn-link peek">Ver las primeras filas</button><div class="peek-out"></div>`;
+        $('.peek', box).addEventListener('click', ev => {
+          ev.target.hidden = true;
+          $('.peek-out', box).innerHTML = tableHTML(rs.columns, rs.values.slice(0, 3)) + `<p class="muted small">Úsalo para confirmar la forma del resultado, no para copiar números.</p>`;
+        });
+      } catch (err) { box.remove(); }
+    })();
     const draftKey = o.draftKey;
     const e = makeEditor(S('editor'), {
       lang, id: 'ed-' + String(sfx).replace(/\W/g, '-'), label: o.label || 'Editor de práctica',
@@ -840,12 +975,32 @@
 
         <section class="why"><p class="eyebrow">Por qué importa</p><p>${esc(l.why)}</p></section>
 
+        ${runnableLang === 'sql' && l.diagram !== 'er' ? (() => {
+          const used = tablesIn([...practices.map(p => (p.solution || '') + ' ' + (p.verify || '')), l.example && l.example.code, ...l.concept.map(c => c.code)].join(' '));
+          const names = used.length ? used : SCHEMA.tables.map(t => t.name);
+          return `<section class="db-ref"><details>
+            <summary><span class="db-ref-t">${icon('sql')} Base de datos de esta lección</span><span class="muted small">${names.join(' · ')}</span></summary>
+            <div class="db-ref-body"><p class="small muted">${esc(SCHEMA.company)} Estas son las tablas que usan los ejemplos y ejercicios de esta lección. Toca una para ver sus columnas.</p>
+            ${tableChipsHTML(names)}
+            <p class="small"><a href="#sql-0">Ver el diagrama completo de la base y cómo se relacionan las tablas</a></p></div>
+          </details></section>`;
+        })() : ''}
+
         <section class="concepts">
           <p class="eyebrow">Concepto</p>
           ${l.concept.map(c => `<div class="concept"><h3>${esc(c.h)}</h3>${c.p ? `<p>${esc(c.p)}</p>` : ''}${c.code ? codeBlock(c.code, c.lang || runnableLang, { runnable: !c.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}</div>`).join('')}
         </section>
 
         ${l.diagram === 'star' ? `<section class="diagram">${starDiagram()}</section>` : ''}
+        ${l.diagram === 'er' ? `<section class="diagram er-section">${erSectionHTML()}</section>` : ''}
+
+        ${l.deeper ? `<section class="deeper">
+          <div class="steps-card"><p class="eyebrow">Cómo lo ejecuta SQL, paso a paso</p><ol class="exec-steps">${l.deeper.steps.map(s => `<li>${esc(s)}</li>`).join('')}</ol></div>
+          <div class="pitfalls"><p class="eyebrow">Errores comunes</p>${l.deeper.pitfalls.map(p => `<div class="pitfall">
+            <div class="pf-row"><span class="chip chip-bad">Así no</span><pre class="pf-code"><code>${highlight(p.bad, 'sql')}</code></pre></div>
+            <div class="pf-row"><span class="chip chip-done">Así sí</span><pre class="pf-code"><code>${highlight(p.good, 'sql')}</code></pre></div>
+            <p class="pf-why">${esc(p.why)}</p></div>`).join('')}</div>
+        </section>` : ''}
 
         ${l.example ? `<section class="example">
           <p class="eyebrow">Ejemplo de oficina</p>
@@ -856,7 +1011,7 @@
           ${l.example.output ? `<div class="output static"><div class="output-bar">Salida</div><pre>${esc(l.example.output)}</pre></div>` : ''}
         </section>` : ''}
 
-        ${practices.map((p, i) => practiceHTML(p, i, { lang: runnableLang, title: i === 0 ? 'Práctica' : `Ejercicio extra ${i}`, passed: !!state.practice[pKey(i)], extra: i > 0 })).join('')}
+        ${practices.map((p, i) => practiceHTML(p, i, { lang: runnableLang, title: i === 0 ? 'Práctica' : `Ejercicio extra ${i}${p.level ? ' · ' + p.level : ''}`, passed: !!state.practice[pKey(i)], extra: i > 0 })).join('')}
 
         ${l.quiz ? `<section class="quiz" id="quiz">
           <p class="eyebrow">Reto rápido</p>
@@ -916,10 +1071,27 @@
     });
     // lecciones que ya cumplían los requisitos con progreso anterior
     if (!done && requirements(l).every(r => r.ok)) refreshCompletion();
-    // bloques de código: copiar / enviar
-    bindCodeActions(app, code => { if (ed) { ed.set(code); $('#practice-0').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }); ed.focus(); } });
+    // base de datos visible
+    const dbRef = $('.db-ref', app); if (dbRef) bindTableChips(dbRef);
+    const er = $('.er-section', app); if (er) bindER(er);
+    // bloques de código: copiar / enviar / ejecutar aquí
+    bindCodeActions(app,code => { if (ed) { ed.set(code); $('#practice-0').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' }); ed.focus(); } });
   }
   function bindCodeActions(root, onSend) {
+    $$('[data-runsql]', root).forEach(b => b.addEventListener('click', async () => {
+      const blk = $('#' + b.dataset.runsql); const out = $('.inline-out', blk);
+      if (!out.hidden && out.dataset.done) { out.hidden = true; b.innerHTML = icon('play') + 'Ejecutar aquí'; return; }
+      out.hidden = false; out.innerHTML = '<div class="output-bar">Ejecutando…</div>';
+      try {
+        const db = await RT.pristine();
+        let results;
+        try { results = db.exec($('code', blk).dataset.raw); } finally { db.close(); }
+        out.innerHTML = results.length
+          ? results.map((rs, k) => `<div class="output-bar">${results.length > 1 ? `Consulta ${k + 1} · ` : ''}Resultado · ${rs.values.length} ${rs.values.length === 1 ? 'fila' : 'filas'}</div>${tableHTML(rs.columns, rs.values, 25)}`).join('')
+          : '<div class="output-bar">La consulta no devolvió filas</div>';
+        out.dataset.done = '1'; b.innerHTML = icon('close') + 'Ocultar resultado';
+      } catch (e) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(sqlError(e.message))}</pre>`; }
+    }));
     $$('[data-copy]', root).forEach(b => b.addEventListener('click', async () => {
       const code = $('#' + b.dataset.copy + ' code').dataset.raw;
       try { await navigator.clipboard.writeText(code); b.innerHTML = icon('check') + 'Copiado'; } catch (e) { const r = document.createRange(); r.selectNodeContents($('#' + b.dataset.copy + ' code')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); b.textContent = 'Selecciona y copia'; }
@@ -1225,7 +1397,7 @@
           <div class="step-head"><span class="chip chip-track">${esc(k.label)}</span><h2>${esc(s.title)}</h2></div>
           <p class="step-explain">${esc(s.explain)}</p>
           ${inputNote}
-          ${s.kind === 'desktop' ? desktopStepHTML(pr, s, i) : practiceHTML(practiceFor(s), 'p' + i, { lang: k.lang, title: 'Tu tarea', passed })}
+          ${s.kind === 'desktop' ? desktopStepHTML(pr, s, i) : practiceHTML(practiceFor(s), 'p' + i, { lang: k.lang, title: 'Tu tarea', passed, dax: s.kind === 'dax' ? { data: data.daxData, measures } : null })}
         </div>
       </section>`;
     }).join('');
@@ -1361,7 +1533,7 @@
       </div>
       <aside class="lab-side"><h3>Esquema</h3><p class="muted small">SQLite real. Haz clic en una tabla para verla.</p>
         <div class="schema">${window.SQLDB.schema.map(t => `<div class="schema-t"><button class="schema-name" data-t="${t.table}">${esc(t.table)} <small>${t.rows} filas</small></button><p class="muted small">${esc(t.desc)}</p><div class="schema-cols">${t.cols.map(c => `<code>${c}</code>`).join('')}</div></div>`).join('')}</div>
-        <h3>Relaciones</h3><p class="muted small">pedidos.cliente_id → clientes.id<br>pedidos.empleado_id → empleados.id<br>detalle_pedidos.pedido_id → pedidos.id<br>detalle_pedidos.producto_id → productos.id<br>empleados.jefe_id → empleados.id</p></aside></div>`;
+        <h3>Relaciones</h3><p class="small"><a href="#sql-0">Ver el diagrama y qué guarda cada columna</a></p><p class="muted small">pedidos.cliente_id → clientes.id<br>pedidos.empleado_id → empleados.id<br>detalle_pedidos.pedido_id → pedidos.id<br>detalle_pedidos.producto_id → productos.id<br>empleados.jefe_id → empleados.id</p></aside></div>`;
     const ed = makeEditor($('#editor'), { lang: 'sql', id: 'ed-lab-sql', value: state.drafts['lab-sql'] || SQL_SNIPPETS[2].c, onRun: run, onChange: v => { state.drafts['lab-sql'] = v; clearTimeout(ed._t); ed._t = setTimeout(save, 400); } });
     $('#snips').addEventListener('change', e => { if (e.target.value !== '') ed.set(SQL_SNIPPETS[+e.target.value].c); e.target.value = ''; });
     $('#run').addEventListener('click', run);
