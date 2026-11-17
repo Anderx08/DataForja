@@ -196,7 +196,7 @@
     // Las consultas de lectura (SELECT, WITH, PRAGMA) se pueden ejecutar ahí mismo para ver qué devuelven.
     const stripped = String(code).split('\n').filter(x => !x.trim().startsWith('--')).join('\n').trim();
     const inline = lang === 'sql' && !opts.noRun && !/\.\.\./.test(code) && stripped && stripped.split(/;\s*\n/).every(s => /^(SELECT|WITH|PRAGMA)\b/i.test(s.trim()) || !s.trim());
-    return `<div class="code" data-lang="${lang}" id="${id}">
+    return `<div class="code" data-lang="${lang}" data-db="${opts.db || ''}" id="${id}">
       <div class="code-bar"><span class="code-lang">${esc(lang === 'm' ? 'Power Query M' : lang === 'dax' ? 'DAX' : lang === 'text' ? 'esquema' : lang === 'pandas' ? 'python · pandas' : lang)}</span>
         <div class="code-actions">
           ${inline ? `<button class="btn-mini btn-mini-run" data-runsql="${id}" title="Ejecutar esta consulta aquí">${icon('play')}Ejecutar aquí</button>` : ''}
@@ -325,8 +325,8 @@
       'productos.csv': toCSV(q('SELECT * FROM productos')),
       'pedidos.csv': toCSV(q('SELECT * FROM pedidos'))
     };
+    if (typeof C.pandasExtraFiles === 'function') Object.assign(files, C.pandasExtraFiles(q));
     db.close();
-    if (typeof C.pandasExtraFiles === 'function') Object.assign(files, C.pandasExtraFiles());
     return files;
   }
   RT.pyodide = function () {
@@ -1212,7 +1212,7 @@
             const r = await runPython(codes[k], '');
             outs[k].innerHTML = `<pre class="ba-run">${esc(r.out) || '<span class="muted">(sin salida)</span>'}</pre>${r.ok ? '' : `<pre class="ba-run err">${esc(r.err)}</pre>`}`;
           } else {
-            const db = await RT.pristine();
+            const db = await RT.pristine(d.db || l.db);
             let res; try { res = db.exec(codes[k]); } finally { db.close(); }
             const rs = res[res.length - 1];
             outs[k].innerHTML = rs ? `${tableHTML(rs.columns, rs.values, 15)}<p class="muted small">${rs.values.length} ${rs.values.length === 1 ? 'fila' : 'filas'}</p>` : '<p class="muted small">Sin filas</p>';
@@ -1277,21 +1277,26 @@
         <section class="why"><p class="eyebrow">Por qué importa</p><p>${esc(l.why)}</p></section>
 
         ${runnableLang === 'sql' && l.diagram !== 'er' ? (() => {
-          const used = tablesIn([...practices.map(p => (p.solution || '') + ' ' + (p.verify || '')), l.example && l.example.code, ...l.concept.map(c => c.code)].join(' '));
-          const names = used.length ? used : SCHEMA.tables.map(t => t.name);
-          return `<section class="db-ref"><details>
-            <summary><span class="db-ref-t">${icon('sql')} Base de datos de esta lección</span><span class="muted small">${names.join(' · ')}</span></summary>
-            <div class="db-ref-body"><p class="small muted">${esc(SCHEMA.company)} Estas son las tablas que usan los ejemplos y ejercicios de esta lección. Toca una para ver sus columnas.</p>
-            ${tableChipsHTML(names)}
-            <p class="small"><a href="#sql-0">Ver el diagrama completo de la base y cómo se relacionan las tablas</a></p></div>
-          </details></section>`;
+          const dbs = [...new Set([l.db || 'principal', ...practices.map(p => p.db || l.db || 'principal'), ...l.concept.filter(c => c.code).map(c => c.db || l.db || 'principal')])];
+          return dbs.map(db => {
+            const texts = [...practices.filter(p => (p.db || l.db || 'principal') === db).map(p => (p.solution || '') + ' ' + (p.verify || '') + ' ' + (p.code || '')), ...l.concept.filter(c => (c.db || l.db || 'principal') === db).map(c => c.code), (l.db || 'principal') === db && l.example ? l.example.code : ''];
+            const sch = schemaOf(db);
+            const used = tablesIn(texts.join(' '), db);
+            const names = used.length ? used : sch.tables.map(t => t.name);
+            return `<section class="db-ref"><details>
+              <summary><span class="db-ref-t">${icon('sql')} ${db === 'principal' ? 'Base de datos de esta lección' : 'Base ' + esc(sch.label || db)}</span><span class="muted small">${names.join(' · ')}</span></summary>
+              <div class="db-ref-body"><p class="small muted">${esc(sch.company)} Estas son las tablas que usan los ejemplos y ejercicios de esta lección. Toca una para ver sus columnas.</p>
+              ${tableChipsHTML(names, db)}
+              ${db === 'principal' ? '<p class="small"><a href="#sql-0">Ver el diagrama completo de la base y cómo se relacionan las tablas</a></p>' : ''}</div>
+            </details></section>`;
+          }).join('');
         })() : ''}
 
         ${l.guide ? guidesHTML(l, runnableLang) : ''}
 
         <section class="concepts">
           <p class="eyebrow">${l.guide ? 'Ejemplos para practicar' : 'Concepto'}</p>
-          ${l.concept.map(c => `<div class="concept"><h3>${esc(c.h)}</h3>${c.p ? `<p>${esc(c.p)}</p>` : ''}${c.code ? codeBlock(c.code, c.lang || runnableLang, { runnable: !c.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}</div>`).join('')}
+          ${l.concept.map(c => `<div class="concept"><h3>${esc(c.h)}</h3>${c.p ? `<p>${esc(c.p)}</p>` : ''}${c.code ? codeBlock(c.code, c.lang || runnableLang, { db: c.db || l.db, runnable: !c.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}</div>`).join('')}
         </section>
 
         ${l.diagram === 'star' ? `<section class="diagram">${starDiagram()}</section>` : ''}
@@ -1309,7 +1314,7 @@
           <p class="eyebrow">Ejemplo de oficina</p>
           <h3>${esc(l.example.title)}</h3>
           <p>${esc(l.example.text)}</p>
-          ${l.example.code ? codeBlock(l.example.code, runnableLang === 'dax' ? 'dax' : runnableLang, { runnable: !l.example.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}
+          ${l.example.code ? codeBlock(l.example.code, runnableLang === 'dax' ? 'dax' : runnableLang, { db: l.db, runnable: !l.example.readonly && !l.reading && pr && pr.type !== 'visual' }) : ''}
           ${l.example.code && !l.example.readonly && !l.reading ? `<div class="example-run"><button class="btn btn-small" id="run-example">${icon('play')}Ejecutar ejemplo</button><div class="output" id="example-out" hidden></div></div>` : ''}
           ${l.example.output ? `<div class="output static"><div class="output-bar">Salida</div><pre>${esc(l.example.output)}</pre></div>` : ''}
         </section>` : ''}
@@ -1344,7 +1349,7 @@
       try {
         if (runnableLang === 'python') { await RT.python(); const r = await runPython(l.example.code, ''); box.innerHTML = `<div class="output-bar">Salida</div><pre>${esc(r.out)}</pre>${r.ok ? '' : `<pre class="err">${esc(r.err)}</pre>`}`; }
         else if (runnableLang === 'pandas') { box.innerHTML = '<div class="output-bar">Cargando Python completo con pandas (unos 20 MB, solo la primera vez)…</div>'; try { box.innerHTML = pandasOutHTML(await runPandas(l.example.code)); } catch (e) { box.innerHTML = `<pre class="err">${esc(PANDAS_LOAD_ERROR)}</pre>`; } }
-        else if (runnableLang === 'sql') { await RT.sql(); const r = runSQL(l.example.code); if (!r.ok) box.innerHTML = `<pre class="err">${esc(r.err)}</pre>`; else { const rs = sqlRows(r.results); box.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas</div>${tableHTML(rs.columns, rs.values)}`; } }
+        else if (runnableLang === 'sql') { await RT.sql(l.db); const r = runSQL(l.example.code, l.db); if (!r.ok) box.innerHTML = `<pre class="err">${esc(r.err)}</pre>`; else { const rs = sqlRows(r.results); box.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas</div>${tableHTML(rs.columns, rs.values)}`; } }
         else if (runnableLang === 'dax') {
           const ms = measuresMap(); const lines = l.example.code.split('\n').filter(x => x.trim() && !x.trim().startsWith('//'));
           const defs = lines.every(x => /^[^=()\[\]]+=\s*\S/.test(x)) ? lines.map(x => { const m = x.match(/^([^=()\[\]]+)=\s*(.+)$/); return [m[1].trim(), m[2]]; }) : [['Resultado', l.example.code.replace(/^[^=()\[\]]+=\s*/, '')]];
@@ -1389,7 +1394,7 @@
       if (!out.hidden && out.dataset.done) { out.hidden = true; b.innerHTML = icon('play') + 'Ejecutar aquí'; return; }
       out.hidden = false; out.innerHTML = '<div class="output-bar">Ejecutando…</div>';
       try {
-        const db = await RT.pristine();
+        const db = await RT.pristine(blk.dataset.db || undefined);
         let results;
         try { results = db.exec($('code', blk).dataset.raw); } finally { db.close(); }
         out.innerHTML = results.length
@@ -1656,7 +1661,7 @@
   }
 
   /* ============================================================ proyectos integradores */
-  const KIND = { sql: { label: 'SQL', lang: 'sql', tc: 'sql' }, python: { label: 'Python', lang: 'python', tc: 'python' }, dax: { label: 'Power BI · DAX', lang: 'dax', tc: 'powerbi' }, desktop: { label: 'Power BI Desktop', lang: null, tc: 'powerbi' } };
+  const KIND = { sql: { label: 'SQL', lang: 'sql', tc: 'sql' }, python: { label: 'Python', lang: 'python', tc: 'python' }, pandas: { label: 'Python · pandas', lang: 'pandas', tc: 'python' }, dax: { label: 'Power BI · DAX', lang: 'dax', tc: 'powerbi' }, desktop: { label: 'Power BI Desktop', lang: null, tc: 'powerbi' } };
   const projKey = (pr, i) => `proj:${pr.id}:${i}`;
   const projProgress = pr => { const steps = pr.steps.map((s, i) => [s, i]).filter(([s]) => s.kind !== 'desktop'); return { done: steps.filter(([, i]) => state.practice[projKey(pr, i)]).length, total: steps.length }; };
   function toCSV(rs) {
@@ -1666,9 +1671,10 @@
   const projCache = {};
   async function projectData(pr) {
     if (projCache[pr.id]) return projCache[pr.id];
-    const db = await RT.pristine();
+    const db = await RT.pristine(pr.db);
     const q = sql => { const r = db.exec(sql); return r.length ? r[r.length - 1] : { columns: [], values: [] }; };
-    const dataset = q(C.projectDatasetSQL);
+    const needsDataset = pr.steps.some(s => s.kind === 'dax' || (s.download && s.download.source === 'dataset'));
+    const dataset = needsDataset ? q(pr.datasetSQL || C.projectDatasetSQL) : { columns: [], values: [] };
     const stepResults = {};
     pr.steps.forEach((s, i) => { if (s.kind === 'sql') stepResults[i] = q(s.practice.solution); });
     db.close();
@@ -1714,7 +1720,7 @@
     const r = route(); if (r.view !== 'project' || r.id !== pr.id) return;
     const measures = window.DAX.makeMeasures(pr.measures);
     const practiceFor = (s) => {
-      if (s.kind !== 'python') return s.practice;
+      if ((s.kind !== 'python' && s.kind !== 'pandas') || s.feedsFrom == null) return s.practice;
       const csv = toCSV(data.stepResults[s.feedsFrom]);
       return { ...s.practice, starter: s.practice.starter.replace('{{CSV}}', csv), solution: s.practice.solution.replace('{{CSV}}', csv) };
     };
