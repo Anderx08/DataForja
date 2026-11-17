@@ -157,6 +157,7 @@
   };
   const KWSET = Object.fromEntries(Object.entries(KW).map(([k, v]) => [k, new Set(v.split(' ').map(x => x.toLowerCase()))]));
   function highlight(code, lang) {
+    if (lang === 'pandas') lang = 'python';
     lang = KWSET[lang] ? lang : 'text';
     const kw = KWSET[lang];
     const comment = lang === 'python' ? /#[^\n]*/y : lang === 'sql' ? /--[^\n]*/y : lang === 'dax' || lang === 'm' ? /\/\/[^\n]*/y : null;
@@ -191,12 +192,12 @@
   function codeBlock(code, lang, opts) {
     opts = opts || {};
     const id = 'cb' + Math.random().toString(36).slice(2, 8);
-    const runnable = opts.runnable && (lang === 'python' || lang === 'sql' || lang === 'dax');
+    const runnable = opts.runnable && (lang === 'python' || lang === 'sql' || lang === 'dax' || lang === 'pandas');
     // Las consultas de lectura (SELECT, WITH, PRAGMA) se pueden ejecutar ahí mismo para ver qué devuelven.
     const stripped = String(code).split('\n').filter(x => !x.trim().startsWith('--')).join('\n').trim();
     const inline = lang === 'sql' && !opts.noRun && !/\.\.\./.test(code) && stripped && stripped.split(/;\s*\n/).every(s => /^(SELECT|WITH|PRAGMA)\b/i.test(s.trim()) || !s.trim());
     return `<div class="code" data-lang="${lang}" id="${id}">
-      <div class="code-bar"><span class="code-lang">${esc(lang === 'm' ? 'Power Query M' : lang === 'dax' ? 'DAX' : lang === 'text' ? 'esquema' : lang)}</span>
+      <div class="code-bar"><span class="code-lang">${esc(lang === 'm' ? 'Power Query M' : lang === 'dax' ? 'DAX' : lang === 'text' ? 'esquema' : lang === 'pandas' ? 'python · pandas' : lang)}</span>
         <div class="code-actions">
           ${inline ? `<button class="btn-mini btn-mini-run" data-runsql="${id}" title="Ejecutar esta consulta aquí">${icon('play')}Ejecutar aquí</button>` : ''}
           ${runnable ? `<button class="btn-mini" data-send="${id}" title="Enviar al editor de práctica">${icon('arrow')}Al editor</button>` : ''}
@@ -252,18 +253,25 @@
       await loadScript('https://cdn.jsdelivr.net/npm/skulpt@1.2.0/dist/skulpt.min.js');
       await loadScript('https://cdn.jsdelivr.net/npm/skulpt@1.2.0/dist/skulpt-stdlib.js');
     },
-    db: null,
-    async sql() {
-      if (RT.db) return RT.db;
+    db: null, dbs: {},
+    async lib() {
+      if (RT.SQL) return RT.SQL;
       await loadScript('https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js');
-      const SQL = RT.SQL || await window.initSqlJs({ locateFile: () => 'sql-wasm.wasm' });
-      RT.SQL = SQL;
-      RT.db = new SQL.Database(); RT.db.run(window.SQLDB.sql);
-      return RT.db;
+      RT.SQL = await window.initSqlJs({ locateFile: () => 'sql-wasm.wasm' });
+      return RT.SQL;
     },
-    resetDb() { if (RT.db) { RT.db.close(); RT.db = null; } return RT.sql(); },
+    // Cada base (principal, rrhh, inventario…) tiene su propia instancia de SQLite.
+    async sql(name) {
+      name = name || 'principal';
+      if (RT.dbs[name]) return RT.dbs[name];
+      const SQL = await RT.lib();
+      const db = new SQL.Database(); db.run(dbSource(name));
+      RT.dbs[name] = db; if (name === 'principal') RT.db = db;
+      return db;
+    },
+    resetDb(name) { name = name || 'principal'; if (RT.dbs[name]) { RT.dbs[name].close(); delete RT.dbs[name]; if (name === 'principal') RT.db = null; } return RT.sql(name); },
     // Base nueva e intacta, independiente de los cambios que el usuario haya hecho en el laboratorio.
-    async pristine() { await RT.sql(); const db = new RT.SQL.Database(); db.run(window.SQLDB.sql); return db; }
+    async pristine(name) { const SQL = await RT.lib(); const db = new SQL.Database(); db.run(dbSource(name)); return db; }
   };
   function runPython(code, stdin) {
     return new Promise(resolve => {
@@ -299,15 +307,109 @@
   }
   const norm = s => String(s || '').replace(/\r/g, '').split('\n').map(l => l.replace(/\s+$/, '')).join('\n').trim();
 
-  function runSQL(q) {
+  /* ============================================================ Python completo (Pyodide) con pandas y matplotlib
+     Solo se carga en las lecciones y el laboratorio de pandas: pesa unos 20 MB la primera vez. */
+  const PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+  const PANDAS_FILES_INFO = [
+    ['ventas.csv', 'Una fila por línea de pedido, con fecha, producto, cliente, vendedor, estado, unidades, ventas y costo.'],
+    ['clientes.csv', 'Los 40 clientes: id, nombre, ciudad, país, segmento, fecha de alta y correo.'],
+    ['productos.csv', 'Los 20 productos con categoría, precio y costo.'],
+    ['pedidos.csv', 'Una fila por pedido: id, cliente_id, empleado_id, fecha y estado.']
+  ];
+  async function pandasFiles() {
+    const db = await RT.pristine();
+    const q = s => { const r = db.exec(s); return r[r.length - 1]; };
+    const files = {
+      'ventas.csv': toCSV(q(C.projectDatasetSQL)),
+      'clientes.csv': toCSV(q('SELECT * FROM clientes')),
+      'productos.csv': toCSV(q('SELECT * FROM productos')),
+      'pedidos.csv': toCSV(q('SELECT * FROM pedidos'))
+    };
+    db.close();
+    if (typeof C.pandasExtraFiles === 'function') Object.assign(files, C.pandasExtraFiles());
+    return files;
+  }
+  RT.pyodide = function () {
+    if (RT._py) return RT._py;
+    RT._py = (async () => {
+      await loadScript(PYODIDE_URL + 'pyodide.js');
+      const py = await window.loadPyodide({ indexURL: PYODIDE_URL });
+      await py.loadPackage(['pandas', 'matplotlib']);
+      await py.runPythonAsync('import matplotlib\nmatplotlib.use("AGG")\nimport pandas as pd\npd.set_option("display.width", 110)\npd.set_option("display.max_columns", 12)\npd.set_option("display.max_rows", 30)');
+      const files = await pandasFiles();
+      for (const [name, text] of Object.entries(files)) py.FS.writeFile(name, text);
+      return py;
+    })();
+    RT._py.catch(() => { RT._py = null; });
+    return RT._py;
+  };
+  const PANDAS_LOAD_ERROR = 'No se pudo cargar Python completo con pandas. Necesita descargar unos 20 MB desde internet; revisa tu conexión y vuelve a intentar. Si estás viendo la página dentro de Claude, los paquetes externos están bloqueados: ábrela en https://anderx08.github.io/DataForja/';
+  function pandasError(msg) {
+    const lines = String(msg || '').trim().split('\n');
+    const last = lines[lines.length - 1];
+    const lineM = [...String(msg).matchAll(/File "<exec>", line (\d+)/g)].pop();
+    const where = lineM ? ` (en la línea ${lineM[1]})` : '';
+    const tips = [
+      [/^KeyError: '?(.+?)'?$/, 'KeyError: la columna "$1" no existe. Revisa el nombre exacto con df.columns: distingue mayúsculas y acentos.'],
+      [/^FileNotFoundError/, 'FileNotFoundError: ese archivo no existe. Los archivos disponibles son ventas.csv, clientes.csv, productos.csv, pedidos.csv y ventas_sucias.csv.'],
+      [/^NameError: name '(.+?)' is not defined/, 'NameError: "$1" no está definido. ¿Falta import pandas as pd o crear la variable antes?'],
+      [/^AttributeError: 'DataFrame' object has no attribute '(.+?)'/, 'AttributeError: el DataFrame no tiene "$1". Si es una columna, usa df["$1"].'],
+      [/^SyntaxError/, 'SyntaxError: hay un error de escritura. Revisa paréntesis, comillas y dos puntos.'],
+      [/^IndentationError/, 'IndentationError: la indentación no es consistente. Usa 4 espacios dentro de cada bloque.']
+    ];
+    for (const [re, rep] of tips) { const m = last.match(re); if (m) return rep.replace(/\$1/g, m[1] || '') + where; }
+    return last + where;
+  }
+  // Ejecuta código con pandas; verify (opcional) se ejecuta después en el mismo espacio de nombres.
+  // Las ejecuciones van en fila: comparten un solo intérprete y una sola salida estándar.
+  let pandasQueue = Promise.resolve();
+  function runPandas(code, verify) {
+    const job = pandasQueue.then(() => runPandasNow(code, verify));
+    pandasQueue = job.catch(() => {});
+    return job;
+  }
+  async function runPandasNow(code, verify) {
+    const py = await RT.pyodide();
+    let out = '', vout = '', target = 'out';
+    const write = s => { if (target === 'out') out += s + '\n'; else vout += s + '\n'; };
+    py.setStdout({ batched: write }); py.setStderr({ batched: write });
+    const ns = py.globals.get('dict')();
+    let ok = true, err = '';
+    try { await py.runPythonAsync(code, { globals: ns }); } catch (e) { ok = false; err = pandasError(e.message); }
+    if (verify && ok) { target = 'v'; try { await py.runPythonAsync(verify, { globals: ns }); } catch (e) { vout += 'ERROR ' + pandasError(e.message); } }
+    target = 'x';
+    let images = [];
+    try {
+      const r = await py.runPythonAsync('import io, base64\nimport matplotlib.pyplot as plt\n_imgs = []\nfor _n in plt.get_fignums():\n    _b = io.BytesIO()\n    plt.figure(_n).savefig(_b, format="png", dpi=80, bbox_inches="tight")\n    _imgs.append(base64.b64encode(_b.getvalue()).decode())\nplt.close("all")\n_imgs', { globals: ns });
+      images = r.toJs(); r.destroy();
+    } catch (e) { /* sin figuras */ }
+    ns.destroy();
+    return { ok, out, err, vout, images };
+  }
+  const pandasCache = new Map();
+  async function pandasExpected(p) {
+    const key = p.solution + '\u0001' + (p.verifyPy || '');
+    if (!pandasCache.has(key)) { const r = await runPandas(p.solution, p.verifyPy); pandasCache.set(key, r.ok ? r : null); }
+    return pandasCache.get(key);
+  }
+  function pandasOutHTML(r) {
+    return `<div class="output-bar">Salida</div><pre>${esc(r.out) || (r.images.length ? '' : '<span class="muted">(sin salida)</span>')}</pre>${r.ok ? '' : `<pre class="err">${esc(r.err)}</pre>`}${r.images.map(b => `<img class="py-fig" alt="Gráfico generado por el código" src="data:image/png;base64,${b}">`).join('')}`;
+  }
+
+  function dbSource(name) {
+    if (!name || name === 'principal') return window.SQLDB.sql;
+    if (!window.SQLDBS || !window.SQLDBS[name]) throw new Error('La base de datos "' + name + '" no existe.');
+    return window.SQLDBS[name].sql;
+  }
+  function runSQL(q, name) {
     try {
       const t0 = performance.now();
-      const res = RT.db.exec(q);
+      const res = RT.dbs[name || 'principal'].exec(q);
       return { ok: true, results: res, ms: performance.now() - t0 };
     } catch (e) { return { ok: false, err: sqlError(e.message) }; }
   }
   function sqlError(m) {
-    return m.replace(/^no such table: (\w+)/, 'La tabla "$1" no existe. Tablas: clientes, productos, empleados, pedidos, detalle_pedidos.')
+    return m.replace(/^no such table: (\w+)/, 'La tabla "$1" no existe en esta base. Revisa las tablas en el recuadro "Datos para este ejercicio".')
       .replace(/^no such column: ([\w.]+)/, 'La columna "$1" no existe. Revisa el esquema en el panel lateral.')
       .replace(/^near "(.+?)": syntax error/, 'Error de sintaxis cerca de "$1". Revisa comas, paréntesis y el orden de las cláusulas.')
       .replace(/^ambiguous column name: (\w+)/, 'La columna "$1" existe en varias tablas: antepón el alias de la tabla (p.ej. c.$1).')
@@ -415,7 +517,8 @@
     if (LESSONS[h]) return { view: 'lesson', id: h };
     if (h === 'plan') return { view: 'plan' };
     if (h === 'logros') return { view: 'badges' };
-    if (/^lab-(python|sql|powerbi)$/.test(h)) return { view: 'lab', id: h.slice(4) };
+    if (/^lab-(python|sql|powerbi|pandas|pq)$/.test(h)) return { view: 'lab', id: h.slice(4) };
+    if (h === 'guia-desktop') return { view: 'desktop' };
     if (/^chuleta-(python|sql|powerbi)$/.test(h)) return { view: 'cheat', id: h.slice(8) };
     if (h === 'repaso') return { view: 'review' };
     if (h === 'proyectos') return { view: 'projects' };
@@ -449,6 +552,7 @@
     else if (r.view === 'lab') renderLab(app, r.id);
     else if (r.view === 'cheat') renderCheat(app, TRACKS[r.id]);
     else if (r.view === 'review') renderReview(app);
+    else if (r.view === 'desktop') renderDesktopGuide(app);
     else if (r.view === 'projects') renderProjects(app);
     else if (r.view === 'project') renderProject(app, PROJECTS[r.id]);
     else if (r.view === 'exam') renderExam(app, TRACKS[r.id]);
@@ -633,6 +737,8 @@
           ${next ? `<a class="btn btn-primary" href="#${next.id}">${icon('play')}${p.done ? 'Continuar' : 'Empezar'}: ${esc(next.title)}</a>` : '<span class="btn btn-primary">Ruta completa</span>'}
           <a class="btn btn-ghost" href="#lab-${t.id}">${icon('lab')}Abrir laboratorio</a>
           <a class="btn btn-ghost" href="#chuleta-${t.id}">${icon('book')}Chuleta de referencia</a>
+          ${t.id === 'powerbi' ? `<a class="btn btn-ghost" href="#guia-desktop">${icon('powerbi')}Guía para Power BI Desktop</a>` : ''}
+          ${t.id === 'python' ? `<a class="btn btn-ghost" href="#lab-pandas">${icon('lab')}Laboratorio de pandas</a>` : ''}
         </div>
         <p class="muted small">${t.lessons.length} lecciones · ${t.lessons.reduce((n, l) => n + (l.practice ? 1 : 0) + (l.extra ? l.extra.length : 0), 0)} ejercicios comprobados · ${t.lessons.reduce((n, l) => n + l.minutes, 0)} minutos en total</p>
       </div>
@@ -646,27 +752,31 @@
      Fichas de tablas, diagrama y recuadros "Datos para este ejercicio". */
   const SCHEMA = C.sqlSchema || { tables: [], tips: [], company: '' };
   const SCHEMA_T = Object.fromEntries(SCHEMA.tables.map(t => [t.name, t]));
-  function tablesIn(text) {
+  // Otras bases (rrhh, inventario…) documentadas en C.sqlSchemas
+  const schemaOf = db => (!db || db === 'principal') ? SCHEMA : ((C.sqlSchemas || {})[db] || SCHEMA);
+  const schemaTable = (name, db) => schemaOf(db).tables.find(t => t.name === name);
+  function tablesIn(text, db) {
+    const sch = schemaOf(db); const names = new Set(sch.tables.map(t => t.name));
     const set = new Set();
-    String(text || '').replace(/\b(?:FROM|JOIN|INTO|UPDATE|table_info\()\s*([a-z_]+)/gi, (_, n) => { if (SCHEMA_T[n.toLowerCase()]) set.add(n.toLowerCase()); return _; });
-    return SCHEMA.tables.map(t => t.name).filter(n => set.has(n));
+    String(text || '').replace(/\b(?:FROM|JOIN|INTO|UPDATE|table_info\()\s*([a-z_]+)/gi, (_, n) => { if (names.has(n.toLowerCase())) set.add(n.toLowerCase()); return _; });
+    return sch.tables.map(t => t.name).filter(n => set.has(n));
   }
-  function tableCardHTML(name) {
-    const t = SCHEMA_T[name];
-    return `<div class="tcard" data-table="${name}">
+  function tableCardHTML(name, db) {
+    const t = schemaTable(name, db);
+    return `<div class="tcard" data-table="${name}" data-db="${db || 'principal'}">
       <div class="tcard-head"><b><code>${name}</code></b><span>${esc(t.desc)} ${esc(t.grain)}</span></div>
       <div class="tbl-wrap"><table class="tbl cols"><thead><tr><th>Columna</th><th>Tipo</th><th>Qué guarda</th></tr></thead><tbody>${t.cols.map(([c, ty, d, k]) => `<tr><td><code>${c}</code>${k ? ` <span class="key key-${k.toLowerCase()}">${k}</span>` : ''}</td><td>${ty}</td><td class="wrap">${esc(d)}</td></tr>`).join('')}</tbody></table></div>
       <button class="btn btn-small btn-ghost tsample">${icon('play')}Ver 5 filas de ejemplo</button>
       <div class="tsample-out"></div>
     </div>`;
   }
-  const tableChipsHTML = names => `<div class="tchips">${names.map(n => `<button class="tchip" data-t="${n}" aria-expanded="false">${icon('sql')}${n}</button>`).join('')}</div><div class="tdetail"></div>`;
+  const tableChipsHTML = (names, db) => `<div class="tchips">${names.map(n => `<button class="tchip" data-t="${n}" data-db="${db || 'principal'}" aria-expanded="false">${icon('sql')}${n}</button>`).join('')}</div><div class="tdetail"></div>`;
   function bindSamples(root) {
     $$('.tsample', root).forEach(btn => btn.addEventListener('click', async () => {
       const card = btn.closest('.tcard'); const out = $('.tsample-out', card);
       out.innerHTML = '<p class="muted small">Cargando…</p>';
       try {
-        const db = await RT.pristine();
+        const db = await RT.pristine(card.dataset.db);
         const r = db.exec(`SELECT * FROM ${card.dataset.table} LIMIT 5`); db.close();
         out.innerHTML = tableHTML(r[0].columns, r[0].values) + `<p class="muted small">Así se ve la tabla con <code>SELECT * FROM ${card.dataset.table} LIMIT 5;</code></p>`;
         btn.hidden = true;
@@ -680,7 +790,7 @@
       $$('.tchip', b.parentElement).forEach(x => x.setAttribute('aria-expanded', 'false'));
       if (open) { box.innerHTML = ''; return; }
       b.setAttribute('aria-expanded', 'true');
-      box.innerHTML = tableCardHTML(b.dataset.t);
+      box.innerHTML = tableCardHTML(b.dataset.t, b.dataset.db);
       bindSamples(box);
     }));
   }
@@ -727,16 +837,28 @@
     });
   }
   function sqlDataBoxHTML(p, sfx, exam) {
-    const names = tablesIn((p.solution || '') + ' ' + (p.verify || ''));
+    const names = tablesIn((p.solution || '') + ' ' + (p.verify || ''), p.db);
     if (!names.length) return '';
+    const sch = schemaOf(p.db);
     return `<div class="data-box">
-      <p class="eyebrow">${icon('sql')} Datos para este ejercicio</p>
+      <p class="eyebrow">${icon('sql')} Datos para este ejercicio${p.db && p.db !== 'principal' ? ` · base ${esc(sch.label || p.db)}` : ''}</p>
+      ${p.db && p.db !== 'principal' ? `<p class="small">${esc(sch.company)}</p>` : ''}
       <p class="small muted">Tablas que necesitas. Toca una para ver sus columnas y filas de ejemplo.</p>
-      ${tableChipsHTML(names)}
+      ${tableChipsHTML(names, p.db)}
       ${exam ? '' : `<div class="expect small" id="expect-${sfx}">Calculando el resultado esperado…</div>`}
     </div>`;
   }
-  function daxDataBoxHTML(o) {
+  const contextFilters = ctx => Object.entries(ctx || {}).map(([c, v]) => window.DAX.slicerFilter(c, v));
+  const contextText = ctx => Object.entries(ctx || {}).map(([c, v]) => `${c} = ${v}`).join(' y ');
+  function pandasDataBoxHTML() {
+    return `<div class="data-box">
+      <p class="eyebrow">${icon('python')} Archivos disponibles</p>
+      <p class="small muted">Se leen con <code>pd.read_csv("nombre.csv")</code>. Son los mismos datos de la base SQL del curso.</p>
+      <ul class="files-list">${PANDAS_FILES_INFO.concat(C.pandasExtraInfo || []).map(([f, d]) => `<li><code>${esc(f)}</code> <span>${esc(d)}</span></li>`).join('')}</ul>
+    </div>`;
+  }
+  function daxDataBoxHTML(o, p) {
+    p = p || {};
     const data = o.dax ? o.dax.data : { columns: window.DAX.columns, rows: window.DAX.rows };
     const names = o.dax ? [...o.dax.measures.values()].map(m => m.name) : state.measures.map(m => m.name);
     const first = data.rows[0] || {};
@@ -746,6 +868,8 @@
       <p class="small">Tabla <code>Ventas</code> · ${data.rows.length.toLocaleString('es-MX')} filas · ${o.dax ? 'una fila por línea de pedido' : 'una fila por venta'}. Escribe sus columnas como <code>Ventas[Columna]</code>.</p>
       <div class="colchips">${data.columns.map(c => `<span class="colchip">${esc(c)}<small>${type(c)}</small></span>`).join('')}</div>
       <p class="small">Medidas que ya existen y puedes usar: ${names.map(n => `<code>[${esc(n)}]</code>`).join(' ')}</p>
+      ${o.dax ? '' : `<p class="small">Dimensiones relacionadas: ${window.DAX.model.dims.map(d => `<code>${esc(d.name)}</code> (${d.cols.map(esc).join(', ')})`).join(' · ')}. Filtran a Ventas; en un iterador sobre Ventas puedes leerlas con RELATED.</p>`}
+      ${p.context ? `<p class="small context-note">${icon('target')} Se evalúa como en un visual filtrado por <b>${esc(contextText(p.context))}</b>.</p>` : ''}
       <details class="sample-rows"><summary>Ver 5 filas de ejemplo</summary>${tableHTML(data.columns, data.rows.slice(0, 5).map(r => data.columns.map(c => r[c])))}</details>
     </div>`;
   }
@@ -770,9 +894,22 @@
     return `<section class="practice ${o.passed ? 'passed' : ''} ${o.extra ? 'practice-extra' : ''}" id="practice-${sfx}">
         <div class="practice-head"><p class="eyebrow">${esc(o.title)}</p>${o.passed ? `<span class="chip chip-done">${icon('check')} Superada</span>` : ''}</div>
         <p class="prompt">${esc(p.prompt)}</p>
-        ${lang === 'sql' ? sqlDataBoxHTML(p, sfx, o.exam) : ''}
-        ${lang === 'dax' && p.type !== 'visual' ? daxDataBoxHTML(o) : ''}
-        ${p.type === 'visual' ? `
+        ${lang === 'sql' && p.type !== 'predict' ? sqlDataBoxHTML(p, sfx, o.exam) : ''}
+        ${lang === 'dax' && p.type !== 'visual' && p.type !== 'pq' && p.type !== 'predict' ? daxDataBoxHTML(o, p) : ''}
+        ${lang === 'pandas' && p.type !== 'predict' ? pandasDataBoxHTML() : ''}
+        ${p.type === 'pq' ? `
+          <div class="pq-host" id="pq-${sfx}"></div>
+          <div class="hints" id="hints-${sfx}"></div>
+          <div class="result" id="result-${sfx}" hidden></div>` : p.type === 'predict' ? `
+          <div class="predict">
+            <pre class="pf-code predict-code"><code>${highlight(p.code, lang)}</code></pre>
+            <label class="predict-label" for="guess-${sfx}">${p.ask === 'rows' ? '¿Cuántas filas devuelve esta consulta?' : p.ask === 'value' ? '¿Qué valor devuelve? Escribe el número.' : 'Escribe exactamente lo que imprime, una línea por renglón.'}</label>
+            ${p.ask === 'output' ? `<textarea id="guess-${sfx}" class="predict-in" rows="${Math.min(8, Math.max(2, (p.lines || 2)))}" spellcheck="false"></textarea>` : `<input id="guess-${sfx}" class="predict-in input" inputmode="decimal" autocomplete="off">`}
+            <div class="toolbar"><button class="btn btn-primary" id="check-${sfx}">${icon('check')}Comprobar</button>${helpers ? `<button class="btn btn-ghost" id="hint-${sfx}">Pista</button>` : ''}<span class="muted small">Primero razona sin ejecutar: así se entrena leer código.</span></div>
+            <div class="hints" id="hints-${sfx}"></div>
+            <div class="result" id="result-${sfx}" hidden></div>
+            <div class="output" id="out-${sfx}" hidden></div>
+          </div>` : p.type === 'visual' ? `
           <div class="cta-row"><a class="btn btn-ghost" href="#lab-powerbi">${icon('lab')}Abrir el laboratorio de Power BI</a><button class="btn btn-primary" id="check-visual-${sfx}">${icon('check')}Comprobar visual</button></div>
           <div class="result" id="result-${sfx}" hidden></div>` : `
           ${lang === 'dax' ? `<div class="dax-row"><span class="dax-name">Medida =</span></div>` : ''}
@@ -815,18 +952,68 @@
       });
       return null;
     }
+    const bindHints = () => {
+      if (!S('hint')) return;
+      let hintN = 0;
+      S('hint').addEventListener('click', () => { if (hintN < p.hints.length) { const h = document.createElement('p'); h.className = 'hint'; h.innerHTML = `<b>Pista ${hintN + 1}.</b> ${esc(p.hints[hintN])}`; S('hints').appendChild(h); hintN++; } if (hintN >= p.hints.length) { S('hint').disabled = true; S('hint').textContent = 'Sin más pistas'; } });
+    };
+    const showRes = (ok, msg) => {
+      const res = S('result'); res.hidden = false; res.className = 'result ' + (ok ? 'ok' : 'bad');
+      res.innerHTML = `<b>${ok ? icon('check') + ' Correcto.' : 'Todavía no.'}</b> ${esc(msg)}`;
+      if (ok) pass();
+    };
+    if (p.type === 'pq') {
+      window.PQ.mount(S('pq'), {
+        source: p.source, target: p.target, hints: o.exam ? [] : p.hints, solutionSteps: o.exam ? null : p.solutionSteps,
+        stateKey: o.draftKey, store: { get: k => state.drafts[k], set: (k, v) => { state.drafts[k] = v; save(); } },
+        onCheck: (ok, msg) => showRes(ok, msg)
+      });
+      return null;
+    }
+    if (p.type === 'predict') {
+      bindHints();
+      S('check').addEventListener('click', async () => {
+        const guess = S('guess').value; const out = S('out');
+        if (!guess.trim()) { showRes(false, 'Escribe tu respuesta antes de comprobar.'); return; }
+        out.hidden = false; out.innerHTML = '<div class="output-bar">Ejecutando…</div>';
+        try {
+          let actual, ok;
+          if (lang === 'python') {
+            await RT.python(); const r = await runPython(p.code, '');
+            actual = r.out + (r.ok ? '' : r.err);
+            out.innerHTML = `<div class="output-bar">Lo que realmente imprime</div><pre>${esc(actual)}</pre>`;
+            ok = norm(guess) === norm(actual);
+          } else if (lang === 'pandas') {
+            const r = await runPandas(p.code); actual = r.out + (r.ok ? '' : r.err);
+            out.innerHTML = pandasOutHTML(r); ok = norm(guess).replace(/\s+/g, ' ') === norm(actual).replace(/\s+/g, ' ');
+          } else if (lang === 'sql') {
+            const db = await RT.pristine(p.db); let res; try { res = db.exec(p.code); } finally { db.close(); }
+            const rs = res[res.length - 1] || { columns: [], values: [] };
+            actual = rs.values.length; ok = parseInt(guess.replace(/[^\d-]/g, ''), 10) === actual;
+            out.innerHTML = `<div class="output-bar">Resultado real · ${actual} ${actual === 1 ? 'fila' : 'filas'}</div>${tableHTML(rs.columns, rs.values, 20)}`;
+          } else {
+            const v = window.DAX.run(p.code, { measures: window.DAX.makeMeasures(DEFAULT_MEASURES), slicers: contextFilters(p.context) });
+            const g = parseFloat(guess.replace(/[^\d.,-]/g, '').replace(/,/g, ''));
+            ok = typeof v === 'number' ? Math.abs(g - v) <= Math.max(0.5, Math.abs(v) * 0.001) || Math.abs(g / 100 - v) < 0.0006 : String(guess).trim().toLowerCase() === String(v).toLowerCase();
+            out.innerHTML = `<div class="output-bar">Valor real</div><div class="kpi small"><div class="kpi-value">${esc(window.DAX.format(v))}</div></div>`;
+          }
+          showRes(ok, ok ? (p.explain || 'Leíste bien el código.') : ('La respuesta real está arriba. ' + (p.explain || '')));
+        } catch (err) { out.innerHTML = `<pre class="err">${esc(err.message || err)}</pre>`; }
+      });
+      return null;
+    }
     const sec = $('#practice-' + sfx);
     if (sec) bindTableChips(sec);
-    if (S('resetdb')) S('resetdb').addEventListener('click', async () => { await RT.resetDb(); toast('Base de datos restaurada', 'Volvió a su estado original'); });
+    if (S('resetdb')) S('resetdb').addEventListener('click', async () => { await RT.resetDb(p.db); toast('Base de datos restaurada', 'Volvió a su estado original'); });
     if (lang === 'sql' && S('expect')) (async () => {
       const box = S('expect');
       try {
-        await RT.sql();
+        await RT.sql(p.db);
         if (p.type === 'sql-modify') {
           box.innerHTML = `<b>Cómo se comprueba:</b> se restaura la base, se ejecuta tu código y se compara el resultado de esta consulta con el de la solución: <code>${esc(p.verify)}</code>`;
           return;
         }
-        const r = runSQL(p.solution); if (!r.ok) { box.remove(); return; }
+        const r = runSQL(p.solution, p.db); if (!r.ok) { box.remove(); return; }
         const rs = sqlRows(r.results); const n = rs.values.length;
         box.innerHTML = `<b>Resultado esperado:</b> ${n} ${n === 1 ? 'fila' : 'filas'} con ${rs.columns.length === 1 ? 'la columna' : `${rs.columns.length} columnas`}: ${rs.columns.map(c => `<code>${esc(c)}</code>`).join(', ')}${p.ordered ? ', en el orden que pide el enunciado' : ''}. <button class="btn-link peek">Ver las primeras filas</button><div class="peek-out"></div>`;
         $('.peek', box).addEventListener('click', ev => {
@@ -858,9 +1045,10 @@
         } else box.hidden = !box.hidden;
       });
     }
+    const daxSlicers = contextFilters(p.context);
     const daxRun = expr => o.dax
-      ? window.DAX.withData(o.dax.data, () => window.DAX.run(expr, { measures: o.dax.measures }))
-      : window.DAX.run(expr, { measures: measuresMap() });
+      ? window.DAX.withData(o.dax.data, () => window.DAX.run(expr, { measures: o.dax.measures, slicers: daxSlicers }))
+      : window.DAX.run(expr, { measures: measuresMap(), slicers: daxSlicers });
     async function runPractice(check) {
       const code = e.get(); const out = S('out'), res = S('result');
       out.hidden = false; res.hidden = true;
@@ -877,33 +1065,46 @@
             else if (norm(r.out) === norm(expected)) showResult(true, 'Tu salida coincide exactamente con la esperada.');
             else showResult(false, diffHint(norm(r.out), norm(expected)));
           }
+        } else if (lang === 'pandas') {
+          out.innerHTML = `<div class="output-bar">${RT._pyReady ? 'Ejecutando…' : 'Cargando Python completo con pandas (unos 20 MB, solo la primera vez)…'}</div>`;
+          let r;
+          try { r = await runPandas(code, p.verifyPy); RT._pyReady = true; } catch (e) { out.innerHTML = `<pre class="err">${esc(PANDAS_LOAD_ERROR)}</pre>`; return; }
+          out.innerHTML = pandasOutHTML(r);
+          if (check) {
+            const exp = await pandasExpected(p);
+            if (!r.ok) showResult(false, 'El programa terminó con un error. Corrígelo y vuelve a comprobar.');
+            else if (!exp) showResult(false, 'No se pudo calcular el resultado esperado. Recarga la página e inténtalo de nuevo.');
+            else if (norm(r.out) !== norm(exp.out)) showResult(false, diffHint(norm(r.out), norm(exp.out)));
+            else if (p.verifyPy && norm(r.vout) !== norm(exp.vout)) showResult(false, p.verifyHint || 'Lo que imprimes coincide, pero el gráfico no es el pedido. Revisa el tipo de gráfico, los datos y el título.');
+            else showResult(true, p.verifyPy ? 'La salida y el gráfico coinciden con lo esperado.' : 'Tu salida coincide exactamente con la esperada.');
+          }
         } else if (lang === 'sql' && p.type === 'sql-modify') {
-          await RT.sql();
-          const r = runSQL(code);
+          await RT.sql(p.db);
+          const r = runSQL(code, p.db);
           if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'Alguna instrucción tiene un error. Corrígela y vuelve a comprobar.'); return; }
-          const after = sqlRows(runSQL(p.verify).results);
+          const after = sqlRows(runSQL(p.verify, p.db).results);
           out.innerHTML = `<div class="output-bar">Estado de la tabla tras tus cambios</div>${tableHTML(after.columns, after.values)}`;
           if (check) {
-            await RT.resetDb(); runSQL(p.solution); const expected = sqlRows(runSQL(p.verify).results);
-            await RT.resetDb(); runSQL(code); const mine = sqlRows(runSQL(p.verify).results);
+            await RT.resetDb(p.db); runSQL(p.solution, p.db); const expected = sqlRows(runSQL(p.verify, p.db).results);
+            await RT.resetDb(p.db); runSQL(code, p.db); const mine = sqlRows(runSQL(p.verify, p.db).results);
             const c = sqlCompare(mine, expected, true);
             showResult(c.ok, c.ok ? 'La tabla quedó exactamente como se esperaba.' : 'La tabla no quedó como se esperaba. ' + c.why);
           }
         } else if (lang === 'sql') {
-          await RT.sql();
-          const r = runSQL(code);
+          await RT.sql(p.db);
+          const r = runSQL(code, p.db);
           if (!r.ok) { out.innerHTML = `<div class="output-bar">Error</div><pre class="err">${esc(r.err)}</pre>`; if (check) showResult(false, 'La consulta tiene un error. Corrígela y vuelve a comprobar.'); return; }
           const rs = sqlRows(r.results);
           out.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas · ${r.ms.toFixed(1)} ms</div>${tableHTML(rs.columns, rs.values)}`;
           if (check) {
-            const sol = sqlRows(runSQL(p.solution).results);
+            const sol = sqlRows(runSQL(p.solution, p.db).results);
             const c = sqlCompare(rs, sol, p.ordered);
             showResult(c.ok, c.ok ? 'El resultado coincide con la consulta de referencia.' : c.why);
           }
         } else if (lang === 'dax') {
           try {
             const v = daxRun(code);
-            out.innerHTML = `<div class="output-bar">Resultado (sin filtros)</div><div class="kpi small"><div class="kpi-value">${esc(window.DAX.format(v))}</div></div>`;
+            out.innerHTML = `<div class="output-bar">Resultado ${p.context ? 'con ' + esc(contextText(p.context)) : '(sin filtros)'}</div><div class="kpi small"><div class="kpi-value">${esc(window.DAX.format(v))}</div></div>`;
             if (check) {
               const expected = daxRun(p.solution);
               const ok = typeof v === 'number' && typeof expected === 'number' ? Math.abs(v - expected) < 0.005 : String(v) === String(expected);
@@ -930,7 +1131,7 @@
   function guideDemoHTML(g, gi, lang) {
     const d = g.demo; if (!d) return '';
     const kind = demoKind(g, lang);
-    const codeLang = kind === 'python' ? 'python' : 'sql';
+    const codeLang = kind === 'python' || kind === 'pandas' ? 'python' : 'sql';
     if (kind === 'dax') {
       return `<div class="demo-ba" id="demo-${gi}">
         <p class="guide-label">Las medidas evaluadas en cada ${esc(d.by === 'Region' ? 'región' : d.by === 'Categoria' ? 'categoría' : d.by)}, con los datos del laboratorio</p>
@@ -950,7 +1151,7 @@
         <p class="ba-note">${esc(d.note)}</p>
       </div>`;
     }
-    const isPy = kind === 'python';
+    const isPy = kind === 'python' || kind === 'pandas';
     return `<div class="demo-ba" id="demo-${gi}">
       <p class="guide-label">${d.before ? 'Antes y después' : (isPy ? 'Ejemplo ejecutado' : 'Resultado con datos reales')}${isPy ? '' : ', con datos reales'}</p>
       <div class="ba-grid ${d.before ? '' : 'single'}">
@@ -1002,7 +1203,11 @@
       const codes = d.before ? [d.before, d.after] : [d.after];
       for (let k = 0; k < codes.length; k++) {
         try {
-          if (kind === 'python') {
+          if (kind === 'pandas') {
+            outs[k].innerHTML = '<p class="muted small">Cargando Python completo con pandas (unos 20 MB, solo la primera vez)…</p>';
+            try { const r = await runPandas(codes[k]); outs[k].innerHTML = `<pre class="ba-run">${esc(r.out) || (r.images.length ? '' : '<span class="muted">(sin salida)</span>')}</pre>${r.ok ? '' : `<pre class="ba-run err">${esc(r.err)}</pre>`}${r.images.map(b => `<img class="py-fig" alt="Gráfico generado" src="data:image/png;base64,${b}">`).join('')}`; }
+            catch (e) { outs[k].innerHTML = `<p class="err small">${esc(PANDAS_LOAD_ERROR)}</p>`; }
+          } else if (kind === 'python') {
             await RT.python();
             const r = await runPython(codes[k], '');
             outs[k].innerHTML = `<pre class="ba-run">${esc(r.out) || '<span class="muted">(sin salida)</span>'}</pre>${r.ok ? '' : `<pre class="ba-run err">${esc(r.err)}</pre>`}`;
@@ -1025,7 +1230,7 @@
     const done = state.completed.includes(l.id);
     const pr = l.practice;
     const practices = [l.practice, ...(l.extra || [])].filter(Boolean);
-    const runnableLang = t.runtime;
+    const runnableLang = l.lang || t.runtime;
     const pKey = i => i === 0 ? l.id : l.id + ':' + i;
     const quizState = state.quiz[l.id] || {};
     const footHTML = () => {
@@ -1138,6 +1343,7 @@
       const box = $('#example-out'); box.hidden = false; box.innerHTML = '<div class="output-bar">Ejecutando…</div>';
       try {
         if (runnableLang === 'python') { await RT.python(); const r = await runPython(l.example.code, ''); box.innerHTML = `<div class="output-bar">Salida</div><pre>${esc(r.out)}</pre>${r.ok ? '' : `<pre class="err">${esc(r.err)}</pre>`}`; }
+        else if (runnableLang === 'pandas') { box.innerHTML = '<div class="output-bar">Cargando Python completo con pandas (unos 20 MB, solo la primera vez)…</div>'; try { box.innerHTML = pandasOutHTML(await runPandas(l.example.code)); } catch (e) { box.innerHTML = `<pre class="err">${esc(PANDAS_LOAD_ERROR)}</pre>`; } }
         else if (runnableLang === 'sql') { await RT.sql(); const r = runSQL(l.example.code); if (!r.ok) box.innerHTML = `<pre class="err">${esc(r.err)}</pre>`; else { const rs = sqlRows(r.results); box.innerHTML = `<div class="output-bar">Resultado · ${rs.values.length} filas</div>${tableHTML(rs.columns, rs.values)}`; } }
         else if (runnableLang === 'dax') {
           const ms = measuresMap(); const lines = l.example.code.split('\n').filter(x => x.trim() && !x.trim().startsWith('//'));
@@ -1203,7 +1409,32 @@
       onSend(code);
     }));
   }
+  function modelDiagram() {
+    const M = window.DAX.model; const BW = 190, RH = 18, HH = 28;
+    const factCols = ['ID', 'Fecha', 'Region', 'Producto', 'Vendedor', 'Unidades', 'Ventas', 'Costo'];
+    const fks = { Fecha: 1, Region: 1, Producto: 1, Vendedor: 1 };
+    const pos = { Calendario: [20, 20], Productos: [615, 20], Regiones: [20, 290], Vendedores: [615, 290] };
+    const fx = 320, fy = 110;
+    const g = (x, y, name, cols, keyFn, cls) => `<g class="er-t ${cls}"><rect class="er-box" x="${x}" y="${y}" width="${BW}" height="${HH + RH * cols.length + 6}" rx="8"/><path class="er-head" d="M${x} ${y + 8}a8 8 0 0 1 8-8h${BW - 16}a8 8 0 0 1 8 8v${HH - 8}h-${BW}z"/><text class="er-name" x="${x + 12}" y="${y + 19}">${name}</text>${cols.map((c, i) => { const k = keyFn(c); return `<text class="er-col ${k ? 'k' : ''}" x="${x + 12}" y="${y + HH + RH * i + 13}">${k ? `<tspan class="er-key">${k} </tspan>` : ''}${esc(c)}</text>`; }).join('')}</g>`;
+    const rowY = (y, i) => y + HH + RH * i + RH / 2;
+    const fRow = c => rowY(fy, factCols.indexOf(c));
+    const link = (dim, fcol) => {
+      const d = M.dims.find(x => x.name === dim); const [x, y] = pos[dim]; const left = x < fx;
+      const y1 = rowY(y, d.cols.indexOf(d.key)), y2 = fRow(fcol);
+      const x1 = left ? x + BW : x, x2 = left ? fx : fx + BW;
+      const c1 = left ? x1 + 50 : x1 - 50, c2 = left ? x2 - 50 : x2 + 50;
+      return `<path class="er-rel" d="M${x1} ${y1} C${c1} ${y1}, ${c2} ${y2}, ${x2} ${y2}"/><text class="er-card" x="${left ? x1 + 4 : x1 - 12}" y="${y1 - 5}">1</text><text class="er-card" x="${left ? x2 - 12 : x2 + 4}" y="${y2 - 5}">*</text>`;
+    };
+    return `<div class="diagram-wrap"><svg viewBox="0 0 830 370" class="er" role="img" aria-label="Modelo en estrella: Ventas en el centro, relacionada con Calendario, Productos, Regiones y Vendedores">
+      ${link('Calendario', 'Fecha')}${link('Productos', 'Producto')}${link('Regiones', 'Region')}${link('Vendedores', 'Vendedor')}
+      ${g(fx, fy, 'Ventas (hechos)', factCols, c => fks[c] ? 'FK' : '', 'fact')}
+      ${M.dims.map(d => g(pos[d.name][0], pos[d.name][1], d.name, d.cols, c => c === d.key ? 'PK' : '', 'dim')).join('')}
+    </svg></div>`;
+  }
   function starDiagram() {
+    return `<p class="eyebrow">El modelo en estrella del laboratorio</p>${modelDiagram()}<p class="muted small">Cada dimensión (lado 1) filtra a Ventas (lado *). Las medidas suman Ventas; los visuales y segmentadores usan las columnas de las dimensiones. En el laboratorio y en los ejercicios puedes usar Calendario[Año], Productos[Categoria], Regiones[Region] o Vendedores[Vendedor].</p>`;
+  }
+  function starDiagramOld() {
     const dim = (x, y, name, cols) => `<g transform="translate(${x} ${y})"><rect class="d-box dim" width="140" height="64" rx="8"/><text class="d-title" x="70" y="22" text-anchor="middle">${name}</text><text class="d-cols" x="70" y="44" text-anchor="middle">${cols}</text></g>`;
     return `<p class="eyebrow">Esquema estrella del modelo</p><div class="diagram-wrap"><svg viewBox="0 0 560 330" class="star" role="img" aria-label="Esquema estrella: la tabla Ventas en el centro conectada a cuatro dimensiones">
       <line class="d-line" x1="280" y1="165" x2="90" y2="60"/><line class="d-line" x1="280" y1="165" x2="470" y2="60"/><line class="d-line" x1="280" y1="165" x2="90" y2="270"/><line class="d-line" x1="280" y1="165" x2="470" y2="270"/>
@@ -1598,11 +1829,125 @@
       <div class="lab-tabs">
         <a class="lab-tab ${which === 'python' ? 'on' : ''}" href="#lab-python" style="--tc: var(--python)">${icon('python')}Python</a>
         <a class="lab-tab ${which === 'sql' ? 'on' : ''}" href="#lab-sql" style="--tc: var(--sql)">${icon('sql')}SQL</a>
+        <a class="lab-tab ${which === 'pandas' ? 'on' : ''}" href="#lab-pandas" style="--tc: var(--python)">${icon('python')}pandas</a>
         <a class="lab-tab ${which === 'powerbi' ? 'on' : ''}" href="#lab-powerbi" style="--tc: var(--powerbi)">${icon('powerbi')}Estudio DAX</a>
+        <a class="lab-tab ${which === 'pq' ? 'on' : ''}" href="#lab-pq" style="--tc: var(--powerbi)">${icon('powerbi')}Power Query</a>
       </div>
       <div class="lab-body" id="lab-body" style="--tc: var(--${which})"></div></div>`;
     const body = $('#lab-body');
-    if (which === 'python') labPython(body); else if (which === 'sql') labSQL(body); else labPBI(body);
+    if (which === 'python') labPython(body); else if (which === 'sql') labSQL(body); else if (which === 'pandas') labPandas(body); else if (which === 'pq') labPQ(body); else labPBI(body);
+  }
+  const PANDAS_SNIPPETS = [
+    { n: 'Explorar ventas.csv', c: 'import pandas as pd\nventas = pd.read_csv("ventas.csv")\nprint(ventas.shape)\nprint(ventas.dtypes)\nprint(ventas.head())' },
+    { n: 'Ventas por categoría y año', c: 'import pandas as pd\nventas = pd.read_csv("ventas.csv")\nprint(pd.pivot_table(ventas, index="Categoria", columns="Año", values="Ventas", aggfunc="sum").round(0))' },
+    { n: 'Unir pedidos y clientes', c: 'import pandas as pd\npedidos = pd.read_csv("pedidos.csv")\nclientes = pd.read_csv("clientes.csv")\nunido = pedidos.merge(clientes, left_on="cliente_id", right_on="id")\nprint(unido.groupby("pais")["estado"].value_counts().unstack(fill_value=0))' },
+    { n: 'Gráfico de líneas por mes', c: 'import pandas as pd\nimport matplotlib.pyplot as plt\nventas = pd.read_csv("ventas.csv")\nfor anio in [2023, 2024]:\n    m = ventas[ventas["Año"] == anio].groupby("Mes")["Ventas"].sum()\n    plt.plot(m.index, m.values, marker="o", label=str(anio))\nplt.title("Ventas por mes")\nplt.legend()' },
+    { n: 'Estadística descriptiva', c: 'import pandas as pd\nventas = pd.read_csv("ventas.csv")\nprint(ventas[["Unidades", "Ventas", "Costo"]].describe().round(2))' }
+  ];
+  function labPandas(body) {
+    body.innerHTML = `<div class="lab-grid">
+      <div class="lab-main">
+        <div class="lab-bar"><h2>Python completo con pandas</h2><select id="snips" class="select" aria-label="Ejemplos"><option value="">Cargar un ejemplo…</option>${PANDAS_SNIPPETS.map((s, i) => `<option value="${i}">${esc(s.n)}</option>`).join('')}</select></div>
+        <div id="editor"></div>
+        <div class="toolbar"><button class="btn btn-primary" id="run">${icon('play')}Ejecutar</button><button class="btn btn-text" id="clear">Limpiar</button><span class="kbd muted">Ctrl + Enter</span><span class="muted small" id="rt-status"></span></div>
+        <div class="output" id="out"><div class="output-bar">Salida</div><pre class="muted">La primera ejecución descarga Python completo con pandas y matplotlib (unos 20 MB). Después es inmediato.</pre></div>
+      </div>
+      <aside class="lab-side"><h3>Archivos disponibles</h3><ul class="files-list">${PANDAS_FILES_INFO.concat(C.pandasExtraInfo || []).map(([f, d]) => `<li><code>${esc(f)}</code> <span>${esc(d)}</span></li>`).join('')}</ul>
+        <h3>Qué es distinto</h3><p class="muted small">Este laboratorio corre CPython real con pandas, numpy y matplotlib. Es el mismo Python de tu computadora: lo que funcione aquí funciona allá. Los gráficos aparecen debajo de la salida.</p></aside></div>`;
+    const ed = makeEditor($('#editor'), { lang: 'python', id: 'ed-lab-pd', value: state.drafts['lab-pandas'] || PANDAS_SNIPPETS[0].c, onRun: run, onChange: v => { state.drafts['lab-pandas'] = v; clearTimeout(ed._t); ed._t = setTimeout(save, 400); } });
+    $('#snips').addEventListener('change', e => { if (e.target.value !== '') ed.set(PANDAS_SNIPPETS[+e.target.value].c); e.target.value = ''; });
+    $('#run').addEventListener('click', run); $('#clear').addEventListener('click', () => ed.set(''));
+    async function run() {
+      const out = $('#out'); out.innerHTML = `<div class="output-bar">${RT._pyReady ? 'Ejecutando…' : 'Cargando Python completo (unos 20 MB, solo la primera vez)…'}</div>`;
+      try { const r = await runPandas(ed.get()); RT._pyReady = true; out.innerHTML = pandasOutHTML(r); touchStreak(); save(); }
+      catch (e) { out.innerHTML = `<pre class="err">${esc(PANDAS_LOAD_ERROR)}</pre>`; }
+    }
+  }
+  function parseCSV(text) {
+    const rows = []; let row = [], cell = '', q = false;
+    const src = String(text).replace(/\r/g, '');
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      if (q) { if (ch === '"' && src[i + 1] === '"') { cell += '"'; i++; } else if (ch === '"') q = false; else cell += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === ',' || ch === ';') { row.push(cell); cell = ''; }
+      else if (ch === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; }
+      else cell += ch;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    const n = Math.max(...rows.map(r => r.length));
+    return { cols: Array.from({ length: n }, (_, i) => 'Column' + (i + 1)), rows: rows.map(r => Array.from({ length: n }, (_, i) => r[i] ?? '')) };
+  }
+  function labPQ(body) {
+    const sets = C.pqDatasets || [];
+    body.innerHTML = `<div class="pq-lab">
+      <div class="lab-bar"><h2>Simulador de Power Query</h2>
+        <label class="pq-lbl">Datos de origen <select class="select" id="pq-set">${sets.map((d, i) => `<option value="${i}">${esc(d.name)}</option>`).join('')}<option value="paste">Pegar mi propio CSV…</option></select></label></div>
+      <div id="pq-paste" hidden class="card"><label for="pq-csv" class="small">Pega aquí un CSV (separado por comas o punto y coma). La primera fila entra como datos, igual que en Power Query: usa "Usar la primera fila como encabezado".</label><textarea id="pq-csv" rows="6" class="csv-fallback"></textarea><button class="btn btn-small btn-primary" id="pq-load">Cargar</button></div>
+      <p class="muted small">Aplica transformaciones como en el Editor de Power Query. A la derecha ves los pasos aplicados y el código M que generan; en Power BI Desktop es el mismo código.</p>
+      <div id="pq-host"></div></div>`;
+    const host = $('#pq-host');
+    const load = src => window.PQ.mount(host, { source: src });
+    $('#pq-set').addEventListener('change', e => {
+      if (e.target.value === 'paste') { $('#pq-paste').hidden = false; return; }
+      $('#pq-paste').hidden = true; load(sets[+e.target.value].source);
+    });
+    $('#pq-load').addEventListener('click', () => { const t = $('#pq-csv').value.trim(); if (t) load(parseCSV(t)); });
+    if (sets.length) load(sets[0].source);
+  }
+  function csvFromRows(cols, rows) { return toCSV({ columns: cols, values: rows }); }
+  function downloadText(name, text) {
+    try {
+      const url = URL.createObjectURL(new Blob(['\ufeff' + text], { type: 'text/csv;charset=utf-8' }));
+      const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      toast('Descarga iniciada', name);
+    } catch (e) { toast('No se pudo descargar', 'Usa Copiar'); }
+  }
+  function renderDesktopGuide(app) {
+    const G = C.desktopGuide; const D = window.DAX;
+    state.desktopGuide = state.desktopGuide || {};
+    const ms = D.makeMeasures(DEFAULT_MEASURES);
+    const val = (expr, ctx, pct) => { try { const v = D.run(expr, { measures: ms, slicers: contextFilters(ctx) }); return pct ? (v * 100).toFixed(1) + '%' : D.format(Math.round(v * 100) / 100); } catch (e) { return 'Error: ' + e.message; } };
+    const prods = []; const seenP = new Set(); D.rows.forEach(r => { if (!seenP.has(r.Producto)) { seenP.add(r.Producto); prods.push([r.Producto, r.Categoria, r.Precio]); } });
+    const vends = [...new Set(D.rows.map(r => r.Vendedor))].sort().map((v, i) => [v, i % 2 ? 'Equipo B' : 'Equipo A']);
+    const files = {
+      'Ventas.csv': csvFromRows(['ID', 'Fecha', 'Region', 'Producto', 'Vendedor', 'Unidades', 'Ventas', 'Costo'], D.rows.map(r => [r.ID, r.Fecha, r.Region, r.Producto, r.Vendedor, r.Unidades, r.Ventas, r.Costo])),
+      'Productos.csv': csvFromRows(['Producto', 'Categoria', 'Precio'], prods.sort((a, b) => a[0] < b[0] ? -1 : 1)),
+      'Vendedores.csv': csvFromRows(['Vendedor', 'Equipo'], vends)
+    };
+    const done = G.steps.filter((_, i) => state.desktopGuide[i]).length;
+    app.innerHTML = `<section class="page-head" style="--tc: var(--powerbi)">
+      <p class="crumbs"><a href="#inicio">Inicio</a> › <a href="#powerbi">Power BI</a> › Guía de Desktop</p>
+      <p class="eyebrow" style="color: var(--tc)">${icon('powerbi')} Práctica fuera de la página</p>
+      <h1>Tu primer informe en Power BI Desktop</h1>
+      <p class="lead">El laboratorio enseña la lógica; el programa real es donde se trabaja. Esta guía reconstruye el mismo modelo en Power BI Desktop, paso a paso, con números de control para que sepas si vas bien.</p>
+      <div class="proj-progress"><span class="box-bar"><span style="width:${Math.round(100 * done / G.steps.length)}%"></span></span><span id="dg-count">${done} de ${G.steps.length} pasos hechos</span></div>
+    </section>
+    <div class="proj-steps">${G.steps.map((st, i) => `<section class="proj-step ${state.desktopGuide[i] ? 'done' : ''}" id="dg-${i}" style="--tc: var(--powerbi)">
+      <div class="step-rail"><span class="step-num">${state.desktopGuide[i] ? icon('check') : i + 1}</span></div>
+      <div class="step-body">
+        <div class="step-head"><h2>${esc(st.title)}</h2></div>
+        ${st.files ? `<div class="dl-grid">${Object.keys(files).map(n => `<div class="dl-item"><code>${n}</code><span class="muted small">${files[n].split('\n').length - 1} filas</span><button class="btn btn-small btn-primary" data-dl="${n}">${icon('arrow')}Descargar</button><button class="btn btn-small btn-ghost" data-cp="${n}">${icon('copy')}Copiar</button></div>`).join('')}</div><p class="muted small">Si la descarga está bloqueada, usa Copiar y pega en un archivo nuevo con el nombre indicado y extensión .csv.</p><textarea class="csv-fallback" id="dg-fallback" rows="5" readonly hidden aria-label="Contenido CSV"></textarea>` : ''}
+        <ol class="dg-items">${st.items.map(x => `<li>${esc(x)}</li>`).join('')}</ol>
+        ${st.code ? codeBlock(st.code, 'dax', { noRun: true }) : ''}
+        ${st.checks ? `<div class="dg-checks"><p class="guide-label">Números de control</p><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Qué revisar</th><th class="num">Debe dar</th></tr></thead><tbody>${st.checks.map(([label, expr, ctx, pct]) => `<tr><td class="wrap">${esc(label)}</td><td class="num"><b>${esc(val(expr, ctx, pct === 'pct'))}</b></td></tr>`).join('')}</tbody></table></div></div>` : ''}
+        <label class="ck dg-done"><input type="checkbox" id="dg-ck-${i}" data-i="${i}" ${state.desktopGuide[i] ? 'checked' : ''}><span>Hice este paso</span></label>
+      </div></section>`).join('')}</div>`;
+    $$('[data-dl]', app).forEach(b => b.addEventListener('click', () => downloadText(b.dataset.dl, files[b.dataset.dl])));
+    $$('[data-cp]', app).forEach(b => b.addEventListener('click', async () => {
+      const text = files[b.dataset.cp];
+      try { await navigator.clipboard.writeText(text); toast('CSV copiado', b.dataset.cp); }
+      catch (e) { const ta = $('#dg-fallback'); ta.hidden = false; ta.value = text; ta.focus(); ta.select(); toast('Selecciona y copia', b.dataset.cp); }
+    }));
+    $$('.dg-done input', app).forEach(cb => cb.addEventListener('change', () => {
+      const i = +cb.dataset.i; state.desktopGuide[i] = cb.checked; save();
+      const sec = $('#dg-' + i); sec.classList.toggle('done', cb.checked); $('.step-num', sec).innerHTML = cb.checked ? icon('check') : i + 1;
+      const n = G.steps.filter((_, k) => state.desktopGuide[k]).length; $('#dg-count').textContent = `${n} de ${G.steps.length} pasos hechos`;
+      $('.proj-progress .box-bar > span', app).style.width = Math.round(100 * n / G.steps.length) + '%';
+      if (n === G.steps.length && !state.desktopGuideDone) { state.desktopGuideDone = true; save(); addXP(200, 'Informe en Power BI Desktop terminado'); }
+    }));
+    bindCodeActions(app, () => {});
   }
   function labPython(body) {
     body.innerHTML = `<div class="lab-grid">
@@ -1685,6 +2030,7 @@
         <div class="chart-host" id="chart"></div>
       </section>
       <section class="pbi-data card">
+        <details><summary>Ver el modelo (tablas y relaciones)</summary>${modelDiagram()}</details>
         <details><summary>Ver la tabla Ventas (${D.rows.length} filas)</summary><div id="data-table"></div></details>
       </section>
     </div>`;

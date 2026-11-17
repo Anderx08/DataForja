@@ -269,6 +269,68 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .pf-why { color: var(--ink-2); font-size: 0.93rem; }
 @media (max-width: 520px) { .pf-row { grid-template-columns: 1fr; gap: 0.25rem; } .pf-row .chip { justify-self: start; } }
 
+/* ---------- pandas, predicción y guía de Desktop */
+.files-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; font-size: 0.85rem; }
+.files-list li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.5rem; align-items: baseline; }
+.files-list span { color: var(--ink-2); }
+.py-fig { display: block; max-width: 100%; margin: 0.6rem auto; border-radius: var(--r-s); background: #ffffff; }
+.context-note { padding: 0.45rem 0.6rem; border-radius: var(--r-s); background: color-mix(in srgb, var(--powerbi) 12%, transparent); }
+.context-note .ic { color: var(--powerbi); }
+.predict { display: flex; flex-direction: column; gap: 0.6rem; }
+.predict-label { font-weight: 600; font-size: 0.95rem; }
+.predict-in { width: 100%; font-family: var(--mono); font-size: 0.9rem; padding: 0.55rem 0.7rem; border-radius: var(--r-s); border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+textarea.predict-in { resize: vertical; }
+.dl-grid { display: grid; gap: 0.5rem; }
+.dl-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 0.6rem; align-items: center; padding: 0.5rem 0.7rem; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--surface); }
+.dg-items { margin: 0; padding-left: 1.2rem; display: grid; gap: 0.4rem; color: var(--ink-2); }
+.dg-checks { display: flex; flex-direction: column; gap: 0.4rem; }
+.dg-checks .tbl th { background: var(--surface-2); color: var(--muted); } .dg-checks .tbl td, .dg-checks .tbl th { border-color: var(--line); }
+.dg-checks .tbl-wrap { border: 1px solid var(--line); }
+.dg-done { margin-top: 0.3rem; font-weight: 600; }
+.pbi-data details + details { margin-top: 0.6rem; }
+@media (max-width: 520px) { .dl-item { grid-template-columns: minmax(0, 1fr) auto; } .dl-item .muted { grid-column: 2; } }
+
+/* ---------- simulador de Power Query */
+.pq { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 1rem; align-items: start; }
+.pq-main, .pq-side { display: flex; flex-direction: column; gap: 0.6rem; min-width: 0; }
+.pq-side { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-s); padding: 0.8rem; }
+.pq-bar { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.pq-title { font-family: var(--display); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--powerbi); }
+.pq-step-name { font-size: 0.8rem; color: var(--muted); }
+.pq-table-wrap { overflow: auto; max-height: 360px; border: 1px solid var(--line); border-radius: var(--r-s); background: var(--surface); }
+.pq-table { border-collapse: collapse; width: 100%; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.pq-table th, .pq-table td { padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); text-align: left; white-space: pre; }
+.pq-table th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; color: var(--ink); }
+.pq-table td.num { text-align: right; }
+.pq-type { display: inline-block; font-size: 0.65rem; font-weight: 700; color: var(--powerbi); margin-right: 0.35rem; padding: 0 0.25rem; border: 1px solid currentColor; border-radius: 3px; }
+.pq-rn { color: var(--muted); width: 2rem; text-align: right !important; }
+.pq-null { color: var(--muted); font-style: italic; }
+.pq-err { color: var(--bad); font-weight: 700; background: var(--bad-soft); }
+.pq-space { color: var(--bad); font-weight: 700; margin-left: 2px; }
+.pq-more { font-size: 0.78rem; color: var(--muted); }
+.pq-add { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: end; padding: 0.7rem; border: 1px dashed var(--line); border-radius: var(--r-s); background: var(--bg); }
+.pq-params { display: contents; }
+.pq-lbl { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.78rem; color: var(--muted); min-width: 0; }
+.pq-cols { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; border: 1px solid var(--line); border-radius: var(--r-s); padding: 0.4rem 0.6rem; font-size: 0.82rem; }
+.pq-cols legend { font-size: 0.78rem; color: var(--muted); }
+.pq-msg { font-size: 0.88rem; padding: 0.5rem 0.7rem; border-radius: var(--r-s); }
+.pq-msg.bad { background: var(--bad-soft); color: var(--bad); }
+.pq-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; counter-reset: pq; }
+.pq-steps li { display: flex; justify-content: space-between; gap: 0.4rem; align-items: center; padding: 0.35rem 0.5rem; border-radius: 6px; background: var(--bg); font-size: 0.82rem; }
+.pq-steps li.bad { background: var(--bad-soft); color: var(--bad); }
+.pq-origin { color: var(--muted); }
+.pq-del { border: 0; background: none; color: var(--muted); font-size: 1.1rem; line-height: 1; padding: 0 0.2rem; }
+.pq-del:hover { color: var(--bad); }
+.pq-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.pq-hints:empty { display: none; }
+.pq-hints { display: flex; flex-direction: column; gap: 0.4rem; }
+.pq-hints ol { margin: 0.3rem 0; padding-left: 1.2rem; }
+.pq-m summary { cursor: pointer; font-size: 0.82rem; color: var(--accent); font-weight: 600; }
+.pq-m pre { margin: 0.4rem 0 0; background: var(--code-bg); color: var(--code-ink); border-radius: var(--r-s); padding: 0.6rem; font-size: 0.72rem; white-space: pre-wrap; word-break: break-word; }
+.pq-target-box { margin-top: 0.8rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.pq-lab { display: flex; flex-direction: column; gap: 0.8rem; }
+@media (max-width: 860px) { .pq { grid-template-columns: 1fr; } }
+
 /* ---------- guías de uso */
 .guides { display: flex; flex-direction: column; gap: 1rem; }
 .guide { display: flex; flex-direction: column; gap: 1rem; padding: 1.25rem; background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--tc); border-radius: var(--r); }
@@ -626,6 +688,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 <script src="content-learn.js" charset="utf-8"></script>
 <script src="content-sql.js" charset="utf-8"></script>
 <script src="content-guides.js" charset="utf-8"></script>
+<script src="content-stage1.js" charset="utf-8"></script>
+<script src="pq.js" charset="utf-8"></script>
 <script src="sqldb.js" charset="utf-8"></script>
 <script src="dax.js" charset="utf-8"></script>
 <script src="app.js" charset="utf-8"></script>
