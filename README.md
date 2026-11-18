@@ -1,20 +1,26 @@
 # DataForja
 
-Plataforma web para aprender **Python, SQL y Power BI** con práctica real en el navegador, sin instalar nada.
+Plataforma web para aprender **Python, SQL, Power BI y estadística aplicada** con práctica real en el navegador, sin instalar nada.
 
-- **37 lecciones** en tres rutas, cada una con: por qué importa, concepto, ejemplo de oficina, práctica comprobada automáticamente y reto rápido. Una lección se completa sola al superar su práctica y su reto.
-- **115 ejercicios verificados**: Python se ejecuta con [Skulpt](https://skulpt.org), SQL sobre una base SQLite real ([sql.js](https://sql.js.org)) con cinco tablas, y DAX con un motor propio que implementa contexto de filtro, `CALCULATE`, `ALL`, `FILTER`, iteradores y más.
-- **Base de datos siempre visible en SQL**: una lección inicial con el diagrama de las cinco tablas, fichas con qué guarda cada columna y filas de ejemplo, y en cada ejercicio las tablas que necesitas y la forma del resultado esperado. Los ejemplos se ejecutan ahí mismo, y cada lección explica paso a paso cómo SQL procesa la consulta y los errores más comunes.
-- **Guías "Cómo se usa"** en las tres rutas: cada instrucción con su sintaxis desglosada, cuándo usarla, cómo se lee en español y un antes/después con datos reales (consultas SQL, código Python ejecutado o medidas DAX evaluadas por grupo).
-- **Repaso espaciado**: cada pregunta respondida entra en cajas de Leitner y vuelve a los 1, 3, 7, 14, 30 y 60 días. Las fallidas se repiten al final de la sesión.
-- **Exámenes finales** por ruta: 15 preguntas nuevas y 2 tareas prácticas sin pistas, nota con aprobado al 70% y recomendación de lecciones según los errores.
-- **Proyectos integradores**: dos casos de negocio que recorren SQL, Python y DAX sobre los mismos datos y terminan con el CSV y la lista de pasos para armar el panel en Power BI Desktop.
-- **Tres laboratorios libres**: intérprete de Python, consola SQL con explorador de esquema y un Estudio DAX con segmentadores, medidas editables y constructor de visuales.
-- **Chuletas de referencia** por ruta, plan de 10 semanas, reto diario, puntos de experiencia, rachas e insignias. El progreso se guarda en el navegador.
+**Ver en línea:** <https://anderx08.github.io/DataForja/>
 
-## Ver en línea
+## Qué incluye
 
-La página se publica con GitHub Pages desde la rama `main`: **<https://anderx08.github.io/DataForja/>**
+- **49 lecciones en cuatro rutas.** Cada una tiene: por qué importa, una guía "Cómo se usa" (sintaxis desglosada, cuándo usarla, cómo se lee y un antes/después con datos reales), ejemplos ejecutables, práctica comprobada y un reto rápido. La lección se completa sola al superar su práctica y su reto.
+- **225 ejercicios comprobados automáticamente**, de varios tipos: escribir código, encontrar el error, predecir el resultado sin ejecutar y transformar datos en Power Query.
+- **Motores reales en el navegador:**
+  - Python básico con [Skulpt](https://skulpt.org) y Python completo con pandas y matplotlib vía [Pyodide](https://pyodide.org), que se carga solo cuando hace falta.
+  - SQLite real ([sql.js](https://sql.js.org)) con tres bases: una distribuidora (la principal), RRHH e inventario, estas dos con datos sucios a propósito.
+  - Un motor DAX propio con modelo en estrella (Ventas, Calendario, Productos, Regiones, Vendedores), contexto de filtro y de fila, `CALCULATE`, `ALL`, `FILTER`, `RELATED`, iteradores, inteligencia de tiempo (`DATESYTD`, `SAMEPERIODLASTYEAR`, `DATEADD`, `TOTALYTD`) y `VAR`/`RETURN`.
+  - Un simulador de Power Query con pasos aplicados y el código M que generan.
+- **Base de datos siempre visible:** diagrama, qué guarda cada columna, filas de ejemplo y la forma del resultado esperado en cada ejercicio.
+- **Repaso espaciado** con cajas de Leitner (1, 3, 7, 14, 30 y 60 días).
+- **Exámenes finales** de Python, SQL y Power BI, con nota, errores explicados y lecciones recomendadas.
+- **Cinco proyectos integradores**, entre ellos un caso final de portafolio: SQL, pandas y DAX sobre los mismos datos y un panel en Power BI Desktop.
+- **Guía para Power BI Desktop** con archivos descargables y números de control.
+- **Herramientas de estudio:** buscador global (tecla `/`), glosario, chuletas, laboratorios libres, plan de 13 semanas, reto diario, insignias, certificados por ruta y exportar e importar el progreso.
+
+El progreso se guarda en el navegador; se puede exportar como archivo para llevarlo a otro equipo.
 
 ## Ejecutar en local
 
@@ -24,25 +30,29 @@ Cualquier servidor estático sirve (hace falta servidor por el archivo `.wasm` d
 python -m http.server 8765
 ```
 
-y abre <http://localhost:8765>.
+y abre <http://localhost:8765>. Las lecciones de pandas necesitan internet la primera vez para descargar Python completo (unos 20 MB).
 
 ## Estructura
 
 | Archivo | Qué contiene |
 |---|---|
 | `index.html` | Página, estilos y estructura |
-| `app.js` | Enrutador, lecciones, verificador de prácticas, repaso, exámenes, proyectos, laboratorios y gráficos |
-| `content.js` | Lecciones base de las tres rutas, retos diarios, plan e insignias |
+| `app.js` | Enrutador, lecciones, verificador de ejercicios, repaso, exámenes, proyectos, laboratorios, buscador, glosario y certificados |
+| `content.js` | Lecciones base, retos diarios, plan e insignias |
 | `content-extra.js` | Ejercicios extra, lecciones avanzadas y chuletas |
-| `content-learn.js` | Exámenes finales, proyectos integradores e insignias de evaluación |
-| `content-sql.js` | Documentación de la base, lección inicial de SQL, guías de uso, explicaciones paso a paso, errores comunes y ejercicios adicionales |
-| `content-guides.js` | Guías de uso de Python y Power BI: sintaxis, partes, cuándo usarla y antes/después |
-| `sqldb.js` | Base de datos de práctica (esquema y datos deterministas) |
+| `content-learn.js` | Exámenes finales y los dos primeros proyectos |
+| `content-sql.js` | Documentación de la base, lección inicial de SQL, guías, paso a paso y errores comunes |
+| `content-guides.js` | Guías "Cómo se usa" de Python y Power BI |
+| `content-stage1.js` | Lecciones de pandas y matplotlib, ejercicios de Power Query, modelo y tiempo en DAX, guía de Desktop |
+| `content-stage2.js` | Limpieza de datos, otros negocios, ejercicios de predecir y depurar, tres proyectos más |
+| `content-stage3.js` | Ruta de estadística, SQL en otros motores y glosario |
+| `sqldb.js` / `sqldbs.js` | Bases de datos de práctica (deterministas) |
 | `dax.js` | Motor DAX didáctico |
+| `pq.js` | Simulador de Power Query |
 | `sql-wasm.wasm` | SQLite compilado a WebAssembly (sql.js 1.10.3) |
 
-`build.sh` genera `artifact.html` (la página sin el envoltorio HTML) para publicarla como artefacto de Claude.
+`build.sh` genera `artifact.html` (la página sin el envoltorio HTML) para publicarla como artefacto de Claude. En esa vista, las lecciones de pandas no pueden descargar Python completo; funcionan en la versión de GitHub Pages.
 
 ## Licencia
 
-MIT para el código de este repositorio. Skulpt y sql.js conservan sus propias licencias.
+MIT para el código de este repositorio. Skulpt, sql.js y Pyodide conservan sus propias licencias.

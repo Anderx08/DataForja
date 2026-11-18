@@ -85,6 +85,13 @@
     state.srs[id] = { box, due: addDays(today(), INTERVALS[box]) };
   }
   const dueIds = () => Object.entries(state.srs).filter(([id, it]) => SRS_ITEMS[id] && it.due <= today()).map(([id]) => id);
+  // Orden estable de opciones por pregunta: no cambia entre visitas y no deja la respuesta siempre en el mismo lugar.
+  function stableOrder(key, n) {
+    let h = 2166136261; for (const ch of String(key)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; }
+    const idx = Array.from({ length: n }, (_, i) => i);
+    for (let i = n - 1; i > 0; i--) { h = (Math.imul(h, 1664525) + 1013904223) >>> 0; const j = h % (i + 1); [idx[i], idx[j]] = [idx[j], idx[i]]; }
+    return idx;
+  }
   function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
   /* ============================================================ criterio para completar una lección */
@@ -137,6 +144,9 @@
       menu: '<path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/>',
       close: '<path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2.2" fill="none"/>',
       target: '<path d="M12 2a10 10 0 110 20 10 10 0 010-20zm0 4a6 6 0 100 12 6 6 0 000-12zm0 4a2 2 0 110 4 2 2 0 010-4z"/>',
+      stats: '<path d="M4 20V10h3v10zm6.5 0V4h3v16zM17 20v-7h3v7z"/>',
+      search: '<path d="M10 3a7 7 0 015.6 11.2l4.6 4.6-1.4 1.4-4.6-4.6A7 7 0 1110 3zm0 2a5 5 0 100 10 5 5 0 000-10z"/>',
+      download: '<path d="M11 3h2v9.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3zM4 18h16v2H4z"/>',
       copy: '<path d="M8 4h10a2 2 0 012 2v10h-2V6H8zm-4 4h10a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V10a2 2 0 012-2zm0 2v10h10V10z"/>'
     }[name] || '';
     return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor">${d}</svg>`;
@@ -519,6 +529,8 @@
     if (h === 'logros') return { view: 'badges' };
     if (/^lab-(python|sql|powerbi|pandas|pq)$/.test(h)) return { view: 'lab', id: h.slice(4) };
     if (h === 'guia-desktop') return { view: 'desktop' };
+    if (h === 'glosario') return { view: 'glossary' };
+    if (/^certificado-/.test(h) && TRACKS[h.slice(12)]) return { view: 'cert', id: h.slice(12) };
     if (/^chuleta-(python|sql|powerbi)$/.test(h)) return { view: 'cheat', id: h.slice(8) };
     if (h === 'repaso') return { view: 'review' };
     if (h === 'proyectos') return { view: 'projects' };
@@ -553,6 +565,8 @@
     else if (r.view === 'cheat') renderCheat(app, TRACKS[r.id]);
     else if (r.view === 'review') renderReview(app);
     else if (r.view === 'desktop') renderDesktopGuide(app);
+    else if (r.view === 'glossary') renderGlossary(app);
+    else if (r.view === 'cert') renderCert(app, TRACKS[r.id]);
     else if (r.view === 'projects') renderProjects(app);
     else if (r.view === 'project') renderProject(app, PROJECTS[r.id]);
     else if (r.view === 'exam') renderExam(app, TRACKS[r.id]);
@@ -597,13 +611,13 @@
       <div class="hero-text">
         <p class="eyebrow">Plataforma de aprendizaje práctico</p>
         <h1>Aprende Python, SQL y Power BI <em>haciendo.</em></h1>
-        <p class="lead">Tres rutas, un mismo método: cada lección parte de un problema real de oficina, te explica lo justo y te pone a escribir código que se ejecuta aquí mismo, en tu navegador. Sin instalar nada.</p>
+        <p class="lead">Cuatro rutas, un mismo método: cada lección parte de un problema real de oficina, te explica lo justo y te pone a escribir código que se ejecuta aquí mismo, en tu navegador. Sin instalar nada. Al final, proyectos de negocio y exámenes para demostrar lo aprendido.</p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#${nextLesson.id}">${icon('play')}${done ? 'Continuar: ' + esc(nextLesson.title) : 'Empezar la primera lección'}</a>
           <a class="btn btn-ghost" href="#plan">Ver el plan de estudio</a>
         </div>
         <ul class="hero-points">
-          <li>${icon('check')}Python real en el navegador</li>
+          <li>${icon('check')}Python real, con pandas y gráficos</li>
           <li>${icon('check')}Base de datos SQLite con 5 tablas</li>
           <li>${icon('check')}Motor DAX con contexto de filtro</li>
         </ul>
@@ -638,7 +652,7 @@
       <div class="card daily" id="daily">
         <p class="eyebrow">${icon('target')} Reto del día · ${esc(TRACKS[dq.track].name)}</p>
         <h3>${esc(dq.q)}</h3>
-        <div class="options">${dq.options.map((o, i) => `<button class="opt ${dailyDone ? (i === dq.answer ? 'right' : (state.daily.pick === i ? 'wrong' : '')) : ''}" data-i="${i}" ${dailyDone ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
+        <div class="options">${stableOrder('D' + dIdx, dq.options.length).map(i => { const o = dq.options[i]; return `<button class="opt ${dailyDone ? (i === dq.answer ? 'right' : (state.daily.pick === i ? 'wrong' : '')) : ''}" data-i="${i}" ${dailyDone ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div>
         <p class="explain" ${dailyDone ? '' : 'hidden'}>${esc(dq.explain)}</p>
       </div>
       <div class="card review-home ${due ? 'has-due' : ''}">
@@ -653,7 +667,7 @@
     </section>
 
     <section class="labs-strip prove-strip">
-      <div><p class="eyebrow">${icon('target')} Demuestra lo aprendido</p><h3>Proyectos integradores y exámenes finales</h3><p class="muted">Dos casos de negocio que recorren SQL, Python y Power BI con los mismos datos, y un examen por ruta con nota y recomendaciones de repaso. ${projDone}/${(C.projects || []).length} proyectos y ${examsPassed}/3 exámenes aprobados.</p></div>
+      <div><p class="eyebrow">${icon('target')} Demuestra lo aprendido</p><h3>Proyectos integradores y exámenes finales</h3><p class="muted">${(C.projects || []).length} casos de negocio que recorren SQL, Python y Power BI con los mismos datos, y un examen por ruta con nota y recomendaciones de repaso. ${projDone}/${(C.projects || []).length} proyectos y ${examsPassed}/${C.tracks.filter(t => t.exam).length} exámenes aprobados.</p></div>
       <div class="labs-links"><a class="btn btn-primary" href="#proyectos">${icon('arrow')}Ver proyectos y exámenes</a></div>
     </section>
 
@@ -739,6 +753,7 @@
           <a class="btn btn-ghost" href="#chuleta-${t.id}">${icon('book')}Chuleta de referencia</a>
           ${t.id === 'powerbi' ? `<a class="btn btn-ghost" href="#guia-desktop">${icon('powerbi')}Guía para Power BI Desktop</a>` : ''}
           ${t.id === 'python' ? `<a class="btn btn-ghost" href="#lab-pandas">${icon('lab')}Laboratorio de pandas</a>` : ''}
+          <a class="btn btn-ghost" href="#certificado-${t.id}">${icon('star')}Certificado</a>
         </div>
         <p class="muted small">${t.lessons.length} lecciones · ${t.lessons.reduce((n, l) => n + (l.practice ? 1 : 0) + (l.extra ? l.extra.length : 0), 0)} ejercicios comprobados · ${t.lessons.reduce((n, l) => n + l.minutes, 0)} minutos en total</p>
       </div>
@@ -1258,7 +1273,7 @@
       const right = answered && picked === q.answer;
       return `<div class="quiz-q" data-q="${qi}">
         <h3>${esc(q.q).replace(/\n/g, '<br>')}</h3>
-        <div class="options">${q.options.map((o, i) => `<button class="opt ${answered ? (i === q.answer && right ? 'right' : (picked === i && !right ? 'wrong' : '')) : ''}" data-i="${i}" ${answered ? 'disabled' : ''}>${esc(o)}</button>`).join('')}</div>
+        <div class="options">${stableOrder(l.id + ':' + qi, q.options.length).map(i => { const o = q.options[i]; return `<button class="opt ${answered ? (i === q.answer && right ? 'right' : (picked === i && !right ? 'wrong' : '')) : ''}" data-i="${i}" ${answered ? 'disabled' : ''}>${esc(o)}</button>`; }).join('')}</div>
         <p class="explain" ${answered ? '' : 'hidden'}>${esc(q.explain)}</p>
         <div class="quiz-retry" ${answered && !right ? '' : 'hidden'}><button class="btn btn-small btn-ghost retry">Intentar de nuevo</button><span class="muted small">Esta pregunta volverá mañana en tu repaso.</span></div>
       </div>`;
@@ -1460,15 +1475,29 @@
       if (id.startsWith('proyecto-')) { const p = PROJECTS[id.slice(9)]; return { done: !!(state.projects[p.id] && state.projects[p.id].done), tc: 'accent', ic: icon('lab'), title: 'Proyecto: ' + p.title, meta: p.minutes + ' min' }; }
       const t = TRACKS[id.slice(7)]; return { done: !!(state.exams[t.id] && state.exams[t.id].passed), tc: t.id, ic: icon('target'), title: 'Examen final de ' + t.name, meta: '45 min' };
     };
-    app.innerHTML = `<section class="page-head"><p class="eyebrow">Plan sugerido</p><h1>Diez semanas, tres rutas entrelazadas</h1><p class="lead">Alternar Python, SQL y Power BI cada semana refuerza las ideas comunes: filtrar, agrupar, unir, medir. Tres o cuatro lecciones por semana, más diez minutos diarios de repaso, equivalen a unas dos horas semanales. La última semana aplica todo en proyectos y exámenes.</p>
+    app.innerHTML = `<section class="page-head"><p class="eyebrow">Plan sugerido</p><h1>${C.plan.length} semanas, cuatro rutas entrelazadas</h1><p class="lead">Alternar Python, SQL, Power BI y estadística refuerza las ideas comunes: filtrar, agrupar, unir, medir y leer los números con criterio. Tres o cuatro lecciones por semana, más diez minutos diarios de repaso, equivalen a unas dos o tres horas semanales. Las últimas semanas aplican todo en datos reales, proyectos y exámenes.</p>
       <ol class="method-list method-inline"><li><b>Por qué importa:</b> el problema real.</li><li><b>Concepto</b> con código ejecutable.</li><li><b>Ejemplo de oficina.</b></li><li><b>Práctica comprobada</b> y ejercicios extra.</li><li><b>Reto rápido</b> que entra al repaso.</li></ol></section>
     <section class="weeks">${C.plan.map(w => { const items = w.lessons.map(id => [id, item(id)]); const done = items.filter(([, x]) => x.done).length; return `<div class="week ${done === items.length ? 'done' : ''}"><div class="week-head"><span class="week-n">Semana ${w.week}</span><h3>${esc(w.title)}</h3><span class="muted">${done}/${items.length}</span></div>${items.map(([id, x]) => `<a class="week-item ${x.done ? 'done' : ''}" href="#${id}" style="--tc: var(--${x.tc})"><span class="dot-t">${x.ic}</span><span>${esc(x.title)}</span><small>${esc(x.meta)}</small></a>`).join('')}</div>`; }).join('')}</section>`;
   }
   function renderBadges(app) {
     app.innerHTML = `<section class="page-head"><p class="eyebrow">Logros</p><h1>Insignias</h1><p class="lead">Se desbloquean solas al avanzar. ${state.badges.length} de ${C.badges.length} conseguidas.</p></section>
     <section class="badges">${C.badges.map(b => { const got = state.badges.includes(b.id); return `<div class="badge ${got ? 'got' : ''}"><span class="badge-ic">${icon(got ? 'star' : 'lock')}</span><h3>${esc(b.name)}</h3><p>${esc(b.desc)}</p></div>`; }).join('')}</section>
+    <section class="card data-tools">
+      <h3>Tu progreso en otro dispositivo</h3>
+      <p class="muted">El progreso se guarda solo en este navegador. Expórtalo como archivo y luego impórtalo en otra computadora o navegador.</p>
+      <div class="cta-row"><button class="btn btn-primary" id="exp-dl">${icon('download')}Descargar mi progreso</button><button class="btn btn-ghost" id="exp-cp">${icon('copy')}Copiar como texto</button></div>
+      <textarea id="exp-txt" class="csv-fallback" rows="4" readonly hidden aria-label="Progreso en formato JSON"></textarea>
+      <div class="import-box">
+        <label class="small" for="imp-file">Importar desde un archivo .json</label><input type="file" id="imp-file" accept=".json,application/json">
+        <label class="small" for="imp-txt">o pega aquí el texto exportado</label><textarea id="imp-txt" class="csv-fallback" rows="3"></textarea>
+        <div class="cta-row"><button class="btn btn-ghost" id="imp-go">Importar</button><span id="imp-msg" class="small"></span></div>
+        <div id="imp-confirm" hidden><p class="result bad">Esto reemplaza todo tu progreso actual en este navegador. <button class="btn btn-small" id="imp-yes">Sí, reemplazar</button> <button class="btn btn-small btn-text" id="imp-no">Cancelar</button></p></div>
+      </div>
+    </section>
+    <section class="card"><h3>Certificados</h3><p class="muted">Se obtienen al completar todas las lecciones de una ruta y, si la tiene, aprobar su examen final.</p><div class="cert-links">${C.tracks.map(t => `<a class="btn btn-ghost" href="#certificado-${t.id}" style="--tc: var(--${t.id})">${icon(t.id)}${esc(t.name)}${certStatus(t).ok ? ' · listo' : ''}</a>`).join('')}</div></section>
     <section class="card danger-zone"><h3>Reiniciar progreso</h3><p class="muted">Borra lecciones completadas, puntos, rachas e insignias de este navegador. No se puede deshacer.</p><button class="btn btn-ghost" id="reset-all">Borrar todo mi progreso</button><span id="reset-confirm" hidden> ¿Seguro? <button class="btn btn-small" id="reset-yes">Sí, borrar</button></span></section>`;
     $('#reset-all').addEventListener('click', () => { $('#reset-confirm').hidden = false; });
+    bindDataTools();
     $('#reset-yes').addEventListener('click', () => { state = freshState(state.theme); save(); renderTopbar(); go('inicio'); toast('Progreso borrado'); });
   }
 
@@ -1806,6 +1835,151 @@
     }
   }
 
+  /* ============================================================ buscador global */
+  const normTxt = x => String(x || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let SEARCH_INDEX = null;
+  function buildSearchIndex() {
+    const items = [];
+    C.tracks.forEach(t => t.lessons.forEach(l => {
+      items.push({ type: 'Lección', track: t.id, title: l.title, text: [l.why, ...l.concept.map(c => c.h + ' ' + (c.p || '') + ' ' + (c.code || ''))].join(' '), href: '#' + l.id });
+      (l.guide || []).forEach(g => items.push({ type: 'Cómo se usa', track: t.id, title: g.name, sub: l.title, text: g.syntax + ' ' + g.when + ' ' + g.parts.map(x => x.join(' ')).join(' '), href: '#' + l.id }));
+    }));
+    (C.glossary || []).forEach(([term, track, lid, def]) => items.push({ type: 'Glosario', track, title: term, text: def, sub: def, href: '#glosario' }));
+    C.tracks.forEach(t => (t.cheatsheet || []).forEach(sec => sec.items.forEach(([code, desc]) => items.push({ type: 'Chuleta', track: t.id, title: desc, sub: code, text: code + ' ' + sec.h, href: '#chuleta-' + t.id }))));
+    (C.projects || []).forEach(pr => items.push({ type: 'Proyecto', track: null, title: pr.title, sub: pr.summary, text: pr.summary + ' ' + pr.skills.join(' ') + ' ' + pr.context, href: '#proyecto-' + pr.id }));
+    C.tracks.filter(t => t.exam).forEach(t => items.push({ type: 'Examen', track: t.id, title: 'Examen final de ' + t.name, text: 'examen evaluacion nota', href: '#examen-' + t.id }));
+    [['Laboratorio de Python', '#lab-python', 'python'], ['Laboratorio de pandas', '#lab-pandas', 'python'], ['Consola SQL', '#lab-sql', 'sql'], ['Estudio DAX', '#lab-powerbi', 'powerbi'], ['Simulador de Power Query', '#lab-pq', 'powerbi'], ['Guía de Power BI Desktop', '#guia-desktop', 'powerbi'], ['Repaso espaciado', '#repaso', null], ['Glosario', '#glosario', null]].forEach(([title, href, track]) => items.push({ type: 'Herramienta', track, title, text: title, href }));
+    items.forEach(it => { it._t = normTxt(it.title); it._x = normTxt(it.text); });
+    return items;
+  }
+  function searchItems(q) {
+    SEARCH_INDEX = SEARCH_INDEX || buildSearchIndex();
+    const toks = normTxt(q).split(/\s+/).filter(Boolean);
+    if (!toks.length) return [];
+    return SEARCH_INDEX.map(it => {
+      if (!toks.every(t => it._t.includes(t) || it._x.includes(t))) return null;
+      const score = toks.reduce((n, t) => n + (it._t.includes(t) ? (it._t.startsWith(t) ? 8 : 5) : 1), 0) + (it.type === 'Lección' ? 1 : 0);
+      return [score, it];
+    }).filter(Boolean).sort((a, b) => b[0] - a[0]).slice(0, 30).map(x => x[1]);
+  }
+  function openSearch() {
+    let ov = $('#search-ov');
+    if (!ov) {
+      ov = document.createElement('div'); ov.id = 'search-ov'; ov.className = 'search-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-label', 'Buscar en DataForja');
+      ov.innerHTML = `<div class="search-box"><div class="search-in">${icon('search')}<input id="search-q" type="search" placeholder="Busca una función, un tema o un término: JOIN, merge, CALCULATE, mediana…" autocomplete="off"><button class="btn btn-text" id="search-x">Cerrar</button></div><div class="search-res" id="search-res"><p class="muted small">Escribe para buscar en lecciones, guías de uso, chuletas, glosario y proyectos. Atajo: tecla / o Ctrl + K.</p></div></div>`;
+      document.body.appendChild(ov);
+      ov.addEventListener('click', e => { if (e.target === ov) closeSearch(); });
+      $('#search-x').addEventListener('click', closeSearch);
+      $('#search-q').addEventListener('input', e => {
+        const res = searchItems(e.target.value); const box = $('#search-res');
+        box.innerHTML = !e.target.value.trim() ? '<p class="muted small">Escribe para buscar.</p>' : res.length ? res.map(it => `<a class="search-item" href="${it.href}" style="--tc: var(--${it.track || 'accent'})"><span class="chip chip-track">${esc(it.type)}</span><span class="search-t"><b>${esc(it.title)}</b>${it.sub ? `<span class="muted small">${esc(String(it.sub).slice(0, 110))}</span>` : ''}</span></a>`).join('') : '<p class="muted">Sin resultados. Prueba con otra palabra o revisa el glosario.</p>';
+        $$('.search-item', box).forEach(a => a.addEventListener('click', closeSearch));
+      });
+      $('#search-q').addEventListener('keydown', e => { if (e.key === 'Enter') { const first = $('#search-res .search-item'); if (first) { location.hash = first.getAttribute('href'); closeSearch(); } } });
+    }
+    ov.hidden = false; $('#search-q').focus(); $('#search-q').select();
+  }
+  function closeSearch() { const ov = $('#search-ov'); if (ov) ov.hidden = true; }
+
+  /* ============================================================ glosario */
+  function renderGlossary(app) {
+    const G = (C.glossary || []).slice().sort((a, b) => normTxt(a[0]) < normTxt(b[0]) ? -1 : 1);
+    app.innerHTML = `<section class="page-head"><p class="eyebrow">${icon('book')} Referencia</p><h1>Glosario</h1><p class="lead">${G.length} términos que aparecen en el curso, en lenguaje simple y con un enlace a la lección donde se explican.</p>
+      <div class="gl-tools"><input class="input" id="gl-q" type="search" placeholder="Filtrar términos…" aria-label="Filtrar términos"><div class="chips">${[['', 'Todos'], ...C.tracks.map(t => [t.id, t.name])].map(([id, n]) => `<button class="chip gl-f ${id ? '' : 'on'}" data-t="${id}">${esc(n)}</button>`).join('')}</div></div></section>
+      <section class="glossary" id="gl-list"></section>`;
+    let track = '';
+    const draw = () => {
+      const q = normTxt($('#gl-q').value);
+      const rows = G.filter(([term, tr, , def]) => (!track || tr === track) && (!q || normTxt(term + ' ' + def).includes(q)));
+      $('#gl-list').innerHTML = rows.length ? rows.map(([term, tr, lid, def]) => `<div class="gl-item" style="--tc: var(--${tr})"><div class="gl-head"><h3>${esc(term)}</h3><span class="chip chip-track">${esc(TRACKS[tr] ? TRACKS[tr].name : tr)}</span></div><p>${esc(def)}</p>${LESSONS[lid] ? `<a class="small" href="#${lid}">Ver en la lección «${esc(LESSONS[lid].title)}»</a>` : ''}</div>`).join('') : '<p class="muted">Ningún término coincide.</p>';
+    };
+    $('#gl-q').addEventListener('input', draw);
+    $$('.gl-f').forEach(b => b.addEventListener('click', () => { track = b.dataset.t; $$('.gl-f').forEach(x => x.classList.toggle('on', x === b)); draw(); }));
+    draw();
+  }
+
+  /* ============================================================ exportar e importar progreso */
+  function bindDataTools() {
+    const json = () => JSON.stringify({ app: 'DataForja', version: 1, exported: new Date().toISOString(), state }, null, 0);
+    $('#exp-dl').addEventListener('click', () => {
+      try {
+        const url = URL.createObjectURL(new Blob([json()], { type: 'application/json' }));
+        const a = document.createElement('a'); a.href = url; a.download = `dataforja-progreso-${today()}.json`; document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000); toast('Progreso descargado');
+      } catch (e) { const ta = $('#exp-txt'); ta.hidden = false; ta.value = json(); ta.select(); }
+    });
+    $('#exp-cp').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(json()); toast('Progreso copiado', 'Pégalo en el otro navegador'); }
+      catch (e) { const ta = $('#exp-txt'); ta.hidden = false; ta.value = json(); ta.focus(); ta.select(); toast('Selecciona y copia', 'El texto ya está seleccionado'); }
+    });
+    let pending = null;
+    const parse = text => {
+      const d = JSON.parse(text); const st = d && d.state ? d.state : d;
+      if (!st || !Array.isArray(st.completed) || typeof st.xp !== 'number') throw new Error('El archivo no parece un progreso de DataForja.');
+      return st;
+    };
+    const msg = (t, ok) => { const m = $('#imp-msg'); m.textContent = t; m.className = 'small ' + (ok ? '' : 'err'); };
+    $('#imp-file').addEventListener('change', e => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { $('#imp-txt').value = r.result; msg('Archivo cargado. Pulsa Importar.', true); }; r.readAsText(f); });
+    $('#imp-go').addEventListener('click', () => {
+      try { pending = parse($('#imp-txt').value.trim()); $('#imp-confirm').hidden = false; msg(`Se encontraron ${pending.completed.length} lecciones completadas y ${pending.xp} XP.`, true); }
+      catch (e) { msg(e.message.startsWith('El archivo') ? e.message : 'No se pudo leer el texto: revisa que esté completo.', false); }
+    });
+    $('#imp-no').addEventListener('click', () => { $('#imp-confirm').hidden = true; pending = null; });
+    $('#imp-yes').addEventListener('click', () => { if (!pending) return; const theme = state.theme; state = Object.assign(freshState(theme), pending, { theme }); save(); applyTheme(); renderTopbar(); toast('Progreso importado'); render(); });
+  }
+
+  /* ============================================================ certificados */
+  function certStatus(t) {
+    const p = trackProgress(t);
+    const exam = t.exam ? !!(state.exams[t.id] && state.exams[t.id].passed) : true;
+    return { ok: p.done === p.total && exam, p, exam };
+  }
+  function renderCert(app, t) {
+    const cs = certStatus(t);
+    state.certs = state.certs || {};
+    if (cs.ok && !state.certs[t.id]) { state.certs[t.id] = { date: today() }; save(); checkBadges(); }
+    const c = state.certs[t.id];
+    const ex = state.exams[t.id];
+    const hours = Math.round(t.lessons.reduce((n, l) => n + l.minutes, 0) / 60);
+    app.innerHTML = `<section class="page-head" style="--tc: var(--${t.id})"><p class="crumbs"><a href="#inicio">Inicio</a> › <a href="#${t.id}">${esc(t.name)}</a> › Certificado</p><p class="eyebrow" style="color: var(--tc)">${icon('star')} Certificado de ruta</p><h1>Certificado de ${esc(t.name)}</h1></section>
+      ${cs.ok ? `<section class="cert-wrap">
+        <div class="cert" id="cert" style="--tc: var(--${t.id})">
+          <p class="cert-brand">DataForja</p>
+          <p class="cert-k">Certificado de finalización</p>
+          <p class="cert-name" id="cert-name">${esc(state.certName || 'Tu nombre')}</p>
+          <p class="cert-body">completó la ruta de <b>${esc(t.name)}</b>: ${t.lessons.length} lecciones prácticas, unas ${hours} horas de estudio${ex ? `, con examen final aprobado (${ex.best}%)` : ''}.</p>
+          <p class="cert-date">${esc(fmtDate(c.date))}</p>
+        </div>
+        <div class="card cert-tools"><label class="small" for="cert-in">Nombre en el certificado</label><input class="input" id="cert-in" value="${esc(state.certName || '')}" placeholder="Escribe tu nombre completo">
+          <div class="cta-row"><button class="btn btn-primary" id="cert-dl">${icon('download')}Descargar imagen</button></div>
+          <p class="muted small">Es un reconocimiento de este curso para tu portafolio, no una certificación oficial. Si la descarga está bloqueada, toma una captura de pantalla.</p></div>
+      </section>` : `<section class="card cert-req"><h3>Todavía no está listo</h3><ul class="reqs-list">
+          <li class="${cs.p.done === cs.p.total ? 'ok' : ''}">${cs.p.done === cs.p.total ? icon('check') : '○'} Completar las ${cs.p.total} lecciones (llevas ${cs.p.done})</li>
+          ${t.exam ? `<li class="${cs.exam ? 'ok' : ''}">${cs.exam ? icon('check') : '○'} Aprobar el examen final con ${t.exam.passMark}% ${ex ? `(tu mejor nota: ${ex.best}%)` : ''}</li>` : ''}
+        </ul><div class="cta-row"><a class="btn btn-primary" href="#${t.id}">Ir a la ruta</a>${t.exam ? `<a class="btn btn-ghost" href="#examen-${t.id}">Ver el examen</a>` : ''}</div></section>`}`;
+    if (!cs.ok) return;
+    $('#cert-in').addEventListener('input', e => { state.certName = e.target.value; $('#cert-name').textContent = e.target.value || 'Tu nombre'; clearTimeout(renderCert._t); renderCert._t = setTimeout(save, 400); });
+    $('#cert-dl').addEventListener('click', () => {
+      try {
+        const cv = document.createElement('canvas'); cv.width = 1400; cv.height = 900; const g = cv.getContext('2d');
+        const color = getComputedStyle(document.documentElement).getPropertyValue('--' + t.id).trim() || '#2a78d6';
+        g.fillStyle = '#ffffff'; g.fillRect(0, 0, 1400, 900);
+        g.strokeStyle = color; g.lineWidth = 14; g.strokeRect(40, 40, 1320, 820);
+        g.lineWidth = 2; g.strokeRect(70, 70, 1260, 760);
+        g.textAlign = 'center'; g.fillStyle = '#15182a';
+        g.font = '700 40px Outfit, Segoe UI, sans-serif'; g.fillText('DataForja', 700, 170);
+        g.fillStyle = color; g.font = '600 30px Outfit, Segoe UI, sans-serif'; g.fillText('CERTIFICADO DE FINALIZACIÓN', 700, 240);
+        g.fillStyle = '#15182a'; g.font = '700 72px Outfit, Segoe UI, sans-serif'; g.fillText(state.certName || 'Tu nombre', 700, 400);
+        g.fillStyle = '#454a62'; g.font = '400 32px IBM Plex Sans, Segoe UI, sans-serif';
+        g.fillText(`completó la ruta de ${t.name}`, 700, 490);
+        g.fillText(`${t.lessons.length} lecciones prácticas · unas ${hours} horas de estudio`, 700, 545);
+        if (ex) g.fillText(`Examen final aprobado con ${ex.best}%`, 700, 600);
+        g.font = '400 28px IBM Plex Sans, Segoe UI, sans-serif'; g.fillText(fmtDate(c.date), 700, 720);
+        cv.toBlob(b => { const url = URL.createObjectURL(b); const a = document.createElement('a'); a.href = url; a.download = `certificado-${t.id}.png`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000); toast('Certificado descargado'); });
+      } catch (e) { toast('No se pudo descargar', 'Toma una captura de pantalla'); }
+    });
+  }
+
   /* ============================================================ laboratorios */
   const PY_SNIPPETS = [
     { n: 'Hola mundo', c: 'nombre = "Ana"\nprint(f"Hola, {nombre}. Hoy es un buen día para aprender.")' },
@@ -1964,7 +2138,7 @@
         <div class="toolbar"><button class="btn btn-primary" id="run">${icon('play')}Ejecutar</button><button class="btn btn-text" id="clear">Limpiar</button><span class="kbd muted">Ctrl + Enter</span><span class="muted small" id="rt-status"></span></div>
         <div class="output" id="out"><div class="output-bar">Salida</div><pre class="muted">Ejecuta algo para ver el resultado aquí.</pre></div>
       </div>
-      <aside class="lab-side"><h3>Qué puedes usar</h3><p class="muted">Este intérprete corre Python 3 en el navegador (Skulpt). Soporta el núcleo del lenguaje: variables, listas, diccionarios, funciones, clases, comprensiones, f-strings, try/except, y módulos como math, random, string y time.</p><p class="muted">No incluye archivos, pandas ni paquetes externos: para eso usa Python en tu computadora; las lecciones 9 a 11 te muestran el puente.</p><h3>Atajos</h3><ul class="muted small"><li>Tab inserta 4 espacios</li><li>Enter respeta la indentación</li><li>Ctrl + Enter ejecuta</li></ul></aside></div>`;
+      <aside class="lab-side"><h3>Qué puedes usar</h3><p class="muted">Este intérprete corre Python 3 en el navegador (Skulpt). Soporta el núcleo del lenguaje: variables, listas, diccionarios, funciones, clases, comprensiones, f-strings, try/except, y módulos como math, random, string y time.</p><p class="muted">No incluye archivos, pandas ni paquetes externos: para eso usa Python en tu computadora; el laboratorio de pandas y sus lecciones corren Python completo.</p><h3>Atajos</h3><ul class="muted small"><li>Tab inserta 4 espacios</li><li>Enter respeta la indentación</li><li>Ctrl + Enter ejecuta</li></ul></aside></div>`;
     const ed = makeEditor($('#editor'), { lang: 'python', id: 'ed-lab-py', value: state.drafts['lab-python'] || PY_SNIPPETS[1].c, onRun: run, onChange: v => { state.drafts['lab-python'] = v; clearTimeout(ed._t); ed._t = setTimeout(save, 400); } });
     $('#snips').addEventListener('change', e => { if (e.target.value !== '') ed.set(PY_SNIPPETS[+e.target.value].c); e.target.value = ''; });
     $('#run').addEventListener('click', run); $('#clear').addEventListener('click', () => ed.set(''));
@@ -2109,6 +2283,12 @@
     load(); applyTheme(); renderTopbar();
     $('#theme').addEventListener('click', () => { state.theme = state.theme === 'system' ? 'dark' : state.theme === 'dark' ? 'light' : 'system'; save(); applyTheme(); renderTopbar(); });
     $('#menu').addEventListener('click', () => $('#nav').classList.toggle('open'));
+    $('#search-btn').addEventListener('click', openSearch);
+    document.addEventListener('keydown', e => {
+      const typing = /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '');
+      if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) { e.preventDefault(); openSearch(); }
+      else if (e.key === 'Escape') closeSearch();
+    });
     window.addEventListener('hashchange', render);
     render();
     checkBadges();

@@ -432,10 +432,10 @@ window.CONTENT = (function () {
           code: 'SELECT cliente_id, COUNT(*) AS pedidos\nFROM pedidos\nGROUP BY cliente_id\nHAVING COUNT(*) >= 8\nORDER BY pedidos DESC;'
         },
         practice: {
-          prompt: 'Encuentra las categorías cuyo precio promedio supere 1000. Muestra categoria y el promedio redondeado a 2 decimales con alias promedio.',
+          prompt: 'Encuentra las categorías cuyo precio promedio supere 1500. Muestra categoria y el promedio redondeado a 2 decimales con alias promedio.',
           starter: 'SELECT categoria, ROUND(AVG(precio), 2) AS promedio\nFROM productos\nGROUP BY categoria\n',
-          solution: 'SELECT categoria, ROUND(AVG(precio), 2) AS promedio FROM productos GROUP BY categoria HAVING AVG(precio) > 1000;',
-          hints: ['El filtro va después del GROUP BY.', 'HAVING AVG(precio) > 1000.', 'En HAVING repite la función agregada, no uses WHERE.']
+          solution: 'SELECT categoria, ROUND(AVG(precio), 2) AS promedio FROM productos GROUP BY categoria HAVING AVG(precio) > 1500;',
+          hints: ['El filtro va después del GROUP BY.', 'HAVING AVG(precio) > 1500.', 'En HAVING repite la función agregada, no uses WHERE.']
         },
         quiz: [{ q: '¿Cuándo usas HAVING en vez de WHERE?', options: ['Siempre que haya GROUP BY', 'Cuando la condición usa una función agregada como COUNT o SUM', 'Cuando filtras texto', 'Cuando la tabla es muy grande'], answer: 1, explain: 'HAVING existe para condiciones sobre los grupos ya formados, que necesitan agregados. Si la condición es sobre filas individuales, WHERE es más eficiente.' }]
       },
